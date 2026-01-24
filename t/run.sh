@@ -88,5 +88,40 @@ done
 	&& ok "predefined booleans are infocmp's ($nbool across $nterm terminals)" \
 	|| bad "booleans: $nbad terminals disagree with infocmp, $nbool compared"
 
+# -------------------------------------------------- numbers against infocmp
+# `name#value`, a subset until the extended section lands. Skipped for 01036, whose numbers are 4 bytes and are
+# not decoded yet -- the skip count is asserted so that the gap is a number
+# in the output and not a silence.
+nnum=0
+nbad=0
+nskip=0
+for f in $corpus; do
+	t=${f##*/}
+	if [ "$("$TERMINFO_BIN" -i "$f" | sed -n 's/^magic //p')" = 01036 ]; then
+		nskip=$((nskip+1))
+		continue
+	fi
+	# infocmp renders any value above 255 in hex (colors#0x100), so the
+	# oracle's text is normalised to decimal before comparing. Comparing
+	# the rendering instead of the value would be comparing infocmp to
+	# itself.
+	infocmp -x -1 "$t" 2>/dev/null \
+		| sed -n 's/^	\([a-zA-Z0-9_]*\)#\(.*\),$/\1 \2/p' \
+		| while read -r nm v; do printf '%s %d\n' "$nm" "$((v))"; done \
+		| sort > "$work/want"
+	"$TERMINFO_BIN" -d "$f" | sed -n 's/^n //p' | sort > "$work/got"
+	if [ -z "$(comm -13 "$work/want" "$work/got")" ]; then
+		nnum=$((nnum + $(grep -c . < "$work/got")))
+	else
+		nbad=$((nbad+1))
+		[ "$nbad" -le 3 ] && comm -13 "$work/want" "$work/got" | head -6
+	fi
+done
+[ "$nbad" -eq 0 ] && [ "$nnum" -gt 100 ] \
+	&& ok "16-bit numbers are infocmp's ($nnum across $((nterm-nskip)) terminals)" \
+	|| bad "numbers: $nbad terminals disagree with infocmp, $nnum compared"
+[ "$nskip" -eq 5 ] && ok "numbers: $nskip 32-bit-format terminals skipped, as expected" \
+	|| bad "numbers: skipped $nskip 32-bit-format terminals, expected 5"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

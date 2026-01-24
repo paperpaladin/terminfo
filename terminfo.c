@@ -136,6 +136,12 @@ static const char *const bool_names[44] = {
 	"daisy", "xvpa", "sam", "cpix", "lpix", "OTbs", "OTns", "OTnc", "OTMT",
 	"OTNL", "OTpt", "OTxr",
 };
+static const char *const num_names[39] = {
+	"cols", "it", "lines", "lm", "xmc", "pb", "vt", "wsl", "nlab", "lh", "lw",
+	"ma", "wnum", "colors", "pairs", "ncv", "bufsz", "spinv", "spinh", "maddr",
+	"mjump", "mcs", "mls", "npins", "orc", "orl", "orhi", "orvi", "cps", "widcs",
+	"btns", "bitwin", "bitype", "OTug", "OTdC", "OTdN", "OTdB", "OTdT", "OTkn",
+};
 
 /* ------------------------------------------------------------------- entry */
 
@@ -330,7 +336,50 @@ ti_bool(const entry *e, int i)
 	return e->bools[i];
 }
 
+/*
+ * Numbers are signed, and -1 and -2 are not values: -1 (ABSENT_NUMERIC)
+ * means the database says nothing, -2 (CANCELLED_NUMERIC) means it says this
+ * capability does not apply. infocmp prints nothing for the first and
+ * `cap@` for the second, so conflating them loses a fact.
+ *
+ * shortcut: le16 only, so magic 01036 files are misread here. The 32-bit
+ * decode arrives with its own commit; until then the harness asserts
+ * exactly how many terminals it is skipping, so the gap cannot go quiet.
+ */
+static long
+ti_num(const entry *e, int i)
+{
+	if (i < 0 || i >= e->nnum)
+		return TI_ABSENT;
+	return le16(e->nums + (size_t) i * 2);
+}
+
 /* ------------------------------------------------------------------ output */
+
+static void
+dump_nums(const entry *e)
+{
+	int i;
+
+	for (i = 0; i < e->nnum; i++) {
+		const char *nm = i < 39 ? num_names[i] : NULL;
+		long v = ti_num(e, i);
+
+		if (v == TI_ABSENT)
+			continue;
+		if (!nm) {
+			printf("n? %d %ld\n", i, v);
+			continue;
+		}
+		if (v == TI_CANCELLED)
+			printf("n@ %s\n", nm);
+		else if (v < 0)
+			printf("n! %s %ld\n", nm, v);
+		else
+			printf("n %s %ld\n", nm, v);
+	}
+}
+
 
 static void
 dump_bools(const entry *e)
@@ -356,6 +405,7 @@ mode_dump(const entry *e)
 {
 	printf("name %s\n", e->names);
 	dump_bools(e);
+	dump_nums(e);
 	return 0;
 }
 
