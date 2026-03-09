@@ -51,11 +51,35 @@ corpus (44 compiled terminal descriptions under /usr/share/terminfo)
 legacy format (0432) read: 39 terminals
 extended-number format (01036) read: 5 terminals
 predefined booleans are infocmp's (294 across 44 terminals)
-16-bit numbers are infocmp's (177 across 39 terminals)
+numbers are infocmp's (202 across all 44 terminals, 5 of them 32-bit)
+numbers: 5 values exceed 32767, which a 16-bit decode could not represent
 ```
 
 Nothing in the harness compares output against a number anybody writing the
 harness worked out by hand.
+
+## Both number widths, and the value that proves it
+
+Magic 0432 stores numeric capabilities as signed 16-bit integers; magic
+01036 stores them as signed 32-bit integers and is otherwise identical. The
+width comes from the header's magic rather than from guessing at the
+section size.
+
+The assertion that matters is not that the wide values agree -- it is that
+**some value could not have been read any other way**:
+
+```
+numbers: 5 values exceed 32767, which a 16-bit decode could not represent
+```
+
+`pairs#65536` on a 256-colour terminal is the usual one. Without that
+check, a reader that quietly fell back to 16 bits would still agree with
+`infocmp` on every number small enough to fit, which is almost all of them.
+
+This replaced the weakest assertion the harness had: it used to skip every
+magic 01036 file and assert that the skip count was exactly 5, which is a
+hardcoded fact about *this machine* and true nowhere else. Reading them
+deleted the assertion rather than making it more precise.
 
 ## Two sentinels, not one
 
@@ -72,18 +96,28 @@ section by exactly one byte -- and the result is still a file that parses,
 with plausible-looking wrong values. That is why it has its own deliberate
 sabotage in the harness rather than being left to the value comparison.
 
+## The suite refuses a stale binary
+
+`t/run.sh` does not compile anything -- `make test` depends on `all`, so the
+normal path rebuilds first. Run directly after an edit, it used to report
+six passes for a binary built *before* the edit.
+
+That is not a hypothetical. Three mutations of the number decoder were each
+recorded as **surviving** against a stale binary, and all three are caught
+the moment it is rebuilt: a `ti_num` that ignores the width, an `le32` that
+reads three bytes, and an `le32` that is unsigned so the sentinels stop
+being negative. The suite was testing code that no longer existed.
+
+It now refuses to run when `terminfo.c` is newer than the binary, and exits
+non-zero saying so. A suite that cannot tell which code it ran is not a
+suite.
+
 ## What does not work
 
 **Strings are not read yet.** The header's string-table size is validated,
 and the offset array and the table itself are not parsed, so `-d` dumps
 booleans and numbers only. That is most of a terminfo file by volume and all
 of the interesting parts: `cup`, `smcup`, `setaf`.
-
-**32-bit numbers are not read.** The 5 extended-number-format terminals in
-the corpus are deliberately skipped rather than read wrongly -- and the
-suite asserts the count is exactly 5, which is a hardcoded fact about *this
-machine* and the weakest assertion in the harness. Reading them is the next
-planned item, and it deletes the assertion rather than refining it.
 
 **The ncurses extended-capability section is not read.** It is where
 user-defined capabilities such as `Smulx` and `setrgbf` live, and where
