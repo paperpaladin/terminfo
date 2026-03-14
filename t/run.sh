@@ -148,5 +148,86 @@ done
 	&& ok "numbers: $nbig values exceed 32767, which a 16-bit decode could not represent" \
 	|| bad "no number above 32767 was read, so the 32-bit decode is untested"
 
+# -------------------------------------------------- strings against infocmp
+# The largest section of a terminfo file and the one with the most ways to
+# be subtly wrong: the values are OFFSETS into a separate table, -1 means
+# absent, -2 means cancelled, and an offset past the table end is a
+# malformed file rather than an empty capability.
+#
+# Compared as HEX BYTES, not in terminfo's notation. A string capability is
+# arbitrary bytes and the source notation has several spellings per byte
+# (\E, \e and \033 are all ESC), so diffing the notation would compare
+# infocmp against an imitation of itself and would pass or fail on
+# spelling. t/caps-hex.py decodes infocmp's notation with a decoder that
+# shares nothing with the reader under test -- one parses escapes out of
+# text, the other walks an offset table in a binary file.
+#
+# No -x here: the extended section is a separate item, and asking infocmp
+# for extended capabilities would report 86 absences per terminal that are
+# not defects.
+nstr=0
+nbad=0
+nempty=0
+for f in $corpus; do
+	t=${f##*/}
+	"$TERMINFO_BIN" -d "$f" | sed -n 's/^s //p' \
+		| python3 "$here/caps-hex.py" --normalize | sort > "$work/sgot"
+	# Drop the cancelled entries: caps-hex.py emits those as `name @` for
+	# the section below, and they are not string VALUES. Comparing them
+	# here would report every cancelled capability as a missing string.
+	infocmp -1 "$t" 2>/dev/null \
+		| python3 "$here/caps-hex.py" | awk '$2!="@"' | sort > "$work/swant"
+	nstr=$((nstr + $(grep -c . < "$work/sgot")))
+	# A capability defined as the EMPTY string is not an absent one, and
+	# Eterm defines smkx and rmkx that way. Counted so that the
+	# distinction is a number in the output rather than a silence.
+	nempty=$((nempty + $(awk 'NF==1' < "$work/sgot" | grep -c . || true)))
+	if [ -n "$(comm -3 "$work/sgot" "$work/swant")" ]; then
+		nbad=$((nbad+1))
+		[ "$nbad" -le 3 ] && comm -3 "$work/sgot" "$work/swant" | head -6
+	fi
+done
+[ "$nbad" -eq 0 ] && [ "$nstr" -gt 4000 ] \
+	&& ok "string capabilities are infocmp's, byte for byte ($nstr across $nterm terminals)" \
+	|| bad "strings: $nbad terminals disagree with infocmp, $nstr compared"
+[ "$nempty" -gt 0 ] \
+	&& ok "strings: $nempty are defined as the EMPTY string, which is not the same as absent" \
+	|| bad "no empty-valued string capability was read, so that case is untested"
+
+# ----------------------------------------------- cancelled, across all three
+# A CANCELLED capability is the database saying "this one does not apply",
+# which is not the same as saying nothing about it. ncurses stores -2 where
+# -1 means absent, for booleans, numbers and strings alike, and infocmp
+# prints all three as `name@`.
+#
+# This section exists because a mutation found a hole: making ti_str treat
+# -2 as absent SURVIVED the string comparison above, since that comparison
+# only looks at `s ` lines and a cancelled capability emits `s@`. Five
+# cancelled strings and four cancelled numbers/booleans are in this corpus,
+# so the hole was real rather than theoretical.
+ncancel=0
+nbad=0
+for f in $corpus; do
+	t=${f##*/}
+	"$TERMINFO_BIN" -d "$f" | sed -n 's/^[bns]@ \(.*\)/\1 @/p' \
+		| sort > "$work/cgot"
+	infocmp -1 "$t" 2>/dev/null | python3 "$here/caps-hex.py" \
+		| awk '$2=="@"' | sort > "$work/cwant"
+	ncancel=$((ncancel + $(grep -c . < "$work/cgot")))
+	if [ -n "$(comm -3 "$work/cgot" "$work/cwant")" ]; then
+		nbad=$((nbad+1))
+		[ "$nbad" -le 3 ] && comm -3 "$work/cgot" "$work/cwant"
+	fi
+done
+[ "$nbad" -eq 0 ] \
+	&& ok "cancelled capabilities are infocmp's ($ncancel across $nterm terminals)" \
+	|| bad "cancelled: $nbad terminals disagree with infocmp, $ncancel compared"
+# Without this, the whole section above would pass on a corpus containing no
+# cancelled capability at all -- which is how the hole it was written for
+# stayed hidden.
+[ "$ncancel" -gt 0 ] \
+	&& ok "cancelled: $ncancel exist, so -2 is distinguished from -1 on real data" \
+	|| bad "no cancelled capability in the corpus, so -2 vs -1 is untested"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

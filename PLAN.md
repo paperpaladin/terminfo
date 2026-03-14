@@ -127,11 +127,48 @@ should be, it does not get reported as if we knew.
             sentinels stop being negative. It now refuses to run when
             terminfo.c is newer than the binary and exits non-zero saying
             so. A suite that cannot tell which code it ran is not a suite.
-- [ ] 04 the string table and the offset array
-      why: it is the largest section and the one with the most ways to be
-           subtly wrong: offsets are into a separate table, -1 means
-           absent, and an offset past the table end is malformed rather
-           than empty.
+- [x] 04 the string table and the offset array
+      why: the largest section and the one with the most ways to be subtly
+           wrong: the values are offsets into a separate table, -1 means
+           absent, -2 means cancelled, and an offset past the table end is
+           malformed rather than empty.
+      done: ti_str returns three outcomes through one return -- NULL for
+            absent or malformed, a sentinel address for cancelled, and the
+            bytes otherwise. The length comes from a memchr bounded by the
+            table rather than from strlen, so an unterminated string at the
+            table's end cannot be read off the end.
+      proves: 4584 string capabilities across 44 terminals, byte for byte
+            against infocmp. Compared as HEX: a string capability is
+            arbitrary bytes and terminfo's notation has several spellings
+            per byte, so diffing the notation would compare infocmp against
+            an imitation of itself and would pass or fail on spelling.
+            t/caps-hex.py decodes infocmp's notation with a decoder sharing
+            nothing with the reader -- one parses escapes out of text, the
+            other walks an offset table in a binary file.
+      found: acsc is the one capability infocmp does NOT print as stored.
+            It is a sequence of (from, to) byte pairs and infocmp sorts
+            them; hurd and two rxvt-unicode variants store them in an order
+            it does not reproduce, with the identical multiset of pairs.
+            Both sides are normalised through one function so the
+            comparison is between the set of pairs, which is what acsc
+            means. Comparing the order would assert something term(5) does
+            not promise.
+      found: a capability can be defined as the EMPTY string, which is not
+            the same as absent -- Eterm defines smkx and rmkx that way. The
+            first comparison used split(), which collapses an empty field,
+            and the two sides then disagreed about a capability both had
+            read correctly. Six exist and the count is asserted.
+      found: CANCELLATION NEEDED ITS OWN SECTION, and a mutation found out
+            why. Treating -2 as -1 SURVIVED the string comparison, because
+            a cancelled capability emits `s@` and the comparison only
+            looked at `s ` lines. Nine cancelled capabilities exist here
+            across all three classes, infocmp prints them all as `name@`,
+            and they are now compared as one set.
+      survived: two mutants, both malformed-file cases, and no file in this
+            corpus is malformed -- an offset exactly equal to the table
+            size accepted rather than refused, and strlen instead of a
+            bounded memchr. Untested machinery rather than untested
+            behaviour; item 07 is deliberately trying malformed files.
 - [ ] 05 the ncurses extended-capability section
       why: it is where user-defined capabilities such as `Smulx` and
            `setrgbf` live, it is the part `term(5)` does not document, and
