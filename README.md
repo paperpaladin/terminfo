@@ -160,7 +160,7 @@ make this section claim more than it has.
 
 ## The suite refuses a stale binary
 
-`t/run.sh` does not compile anything -- `make test` depends on `all`, so the
+`t/run.sh` does not compile anything -- `make test` depends on `terminfo`, so the
 normal path rebuilds first. Run directly after an edit, it used to report
 six passes for a binary built *before* the edit.
 
