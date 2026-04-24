@@ -59,8 +59,16 @@ cancelled capabilities are infocmp's (9 across 44 terminals)
 cancelled: 9 exist, so -2 is distinguished from -1 on real data
 ```
 
-Nothing in the harness compares output against a number anybody writing the
-harness worked out by hand.
+Every capability value the harness compares comes from `infocmp`, in both
+directions, rather than from a number anybody worked out by hand. The four
+floors are the exception and are hand-written on purpose -- at least 30
+terminals, 200 booleans, 100 numbers, 4000 strings -- and they exist so that
+a corpus too thin to prove anything cannot pass. They are reported as a thin
+corpus rather than as a disagreement, because the combined form used to print
+"booleans: 0 terminals disagree with infocmp, 191 compared" as a failure.
+
+(This paragraph used to say nothing in the harness compares against a
+hand-worked number, which the floors contradict.)
 
 ## Both number widths, and the value that proves it
 
