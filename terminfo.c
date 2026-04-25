@@ -372,6 +372,53 @@ ti_parse(entry *e, const char *path)
 		goto out;
 	}
 
+	/*
+	 * Validate the string-offset array here rather than where it is read.
+	 *
+	 * ti_str already refused an offset past the table and a string with no
+	 * terminator inside it, and its comment says the first of those "is a
+	 * malformed file rather than an empty capability" -- but it signalled
+	 * both by returning NULL, which is also how it reports a capability
+	 * that is legitimately absent. dump_strs does `if (!v) continue`. So a
+	 * file with a corrupt offset was read as valid, printed without the
+	 * capability, and exited 0 with no diagnostic: a plausible answer about
+	 * a broken file, which is worse than a crash because nothing tells you.
+	 *
+	 * Checking at parse time is what count_ok already does for the counts,
+	 * for the same reason stated there: refuse it here rather than at a
+	 * later read that happens to cope. It also leaves ti_str's NULL
+	 * meaning exactly one thing.
+	 */
+	{
+		int i;
+
+		for (i = 0; i < e->nstr; i++) {
+			int off = le16(e->offs + (size_t) i * 2);
+
+			if (off == TI_ABSENT || off == TI_CANCELLED)
+				continue;
+			if (off < 0 || (size_t) off >= (size_t) e->strsz) {
+				char msg[96];
+
+				snprintf(msg, sizeof msg, "string %d has "
+					 "offset %d, outside a %d-byte string "
+					 "table", i, off, e->strsz);
+				fail(&c, msg);
+				goto out;
+			}
+			if (!memchr(e->strtab + off, 0,
+				    (size_t) e->strsz - (size_t) off)) {
+				char msg[96];
+
+				snprintf(msg, sizeof msg, "string %d at offset "
+					 "%d is not terminated before the end "
+					 "of the string table", i, off);
+				fail(&c, msg);
+				goto out;
+			}
+		}
+	}
+
 out:
 	if (c.bad) {
 		free(e->raw);

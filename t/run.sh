@@ -323,5 +323,107 @@ done
 	&& ok "cancelled: $ncancel exist, so -2 is distinguished from -1 on real data" \
 	|| bad "no cancelled capability in the corpus, so -2 vs -1 is untested"
 
+printf '\n--- 07 malformed files, so the bounds checks are watched to fail\n'
+# PLAN item 07. Everything above establishes that correct files are read
+# correctly. Nothing established that broken ones are refused: the cursor's
+# bounds checking had never been watched to fail, which is the same as not
+# knowing whether it works.
+#
+# The base is a real compiled entry copied out of the read-only corpus.
+mal=$work/mal
+mkdir -p "$mal"
+mal_base=$mal/base.ti
+cp "$(printf '%s\n' $corpus | head -1)" "$mal_base"
+mal_n=$(wc -c < "$mal_base")
+
+# The header gives the exact size of the part this parser reads, so the
+# boundary between "truncated" and "merely missing the extended section" is
+# computed rather than guessed. 12-byte header, names, booleans, pad to even,
+# then two bytes per number and per string offset, then the string table.
+eval "$("$TERMINFO_BIN" -i "$mal_base" |
+	awk '$1=="names"||$1=="bools"||$1=="nums"||$1=="strs"||$1=="strtable"{
+		printf "h_%s=%d\n", $1, $2 }')"
+std=$((12 + h_names + h_bools))
+std=$((std + (std % 2)))
+std=$((std + h_nums * 2 + h_strs * 2 + h_strtable))
+
+# Every byte through the header and the first sections, then a stride: a
+# truncation is only interesting where a length or an offset is read.
+mal_cases=0; mal_sig=0; mal_quiet=0; mal_taken=0; mal_first_ok=-1
+i=0
+while [ "$i" -lt "$mal_n" ]; do
+	head -c "$i" "$mal_base" > "$mal/t.ti"
+	for mode in -i -d; do
+		err=$("$TERMINFO_BIN" $mode "$mal/t.ti" 2>&1 >/dev/null); rc=$?
+		mal_cases=$((mal_cases + 1))
+		[ "$rc" -ge 128 ] && mal_sig=$((mal_sig + 1))
+		if [ "$rc" -eq 0 ]; then
+			mal_taken=$((mal_taken + 1))
+			[ "$mal_first_ok" -lt 0 ] && mal_first_ok=$i
+		elif [ -z "$err" ]; then
+			mal_quiet=$((mal_quiet + 1))
+		fi
+	done
+	if [ "$i" -lt 240 ]; then i=$((i + 1)); else i=$((i + 17)); fi
+done
+
+[ "$mal_cases" -ge 400 ] && ok "truncation sweep ran ($mal_cases runs over $mal_n bytes, both modes)" \
+	|| bad "truncation sweep only ran $mal_cases cases"
+[ "$mal_sig" -eq 0 ] && ok "no truncation killed it on a signal" \
+	|| bad "$mal_sig truncations died on a signal"
+[ "$mal_quiet" -eq 0 ] && ok "every refusal said why" \
+	|| bad "$mal_quiet truncations were refused with no diagnostic"
+# The interesting assertion: the first accepted truncation is exactly the end
+# of the sections this parser reads. Earlier is a file it should have
+# refused; later is the extended section, which it does not read and whose
+# absence is not an error. A single number pins both directions.
+[ "$mal_first_ok" -eq "$std" ] && ok "accepts from byte $std, the exact end of the standard sections" \
+	|| bad "first accepted truncation is $mal_first_ok, computed end of sections is $std"
+
+# Header fields, each sabotaged on its own.
+mal_hdr() {
+	python3 -c 'import sys,struct
+b=bytearray(open(sys.argv[1],"rb").read()); struct.pack_into("<h",b,int(sys.argv[3]),int(sys.argv[4]))
+open(sys.argv[2],"wb").write(b)' "$mal_base" "$mal/h.ti" "$2" "$3"
+	err=$("$TERMINFO_BIN" -d "$mal/h.ti" 2>&1 >/dev/null); rc=$?
+	if [ "$rc" -eq 0 ]; then bad "$1: accepted"
+	elif [ "$rc" -ge 128 ]; then bad "$1: died on a signal"
+	elif [ -z "$err" ]; then bad "$1: refused with no diagnostic"
+	else ok "$1"; fi
+}
+mal_hdr 'a wrong magic number is refused'          0  1234
+mal_hdr 'a names size past the file is refused'    2  30000
+mal_hdr 'an absurd boolean count is refused'       4  30000
+mal_hdr 'an absurd number count is refused'        6  30000
+mal_hdr 'an absurd string count is refused'        8  30000
+mal_hdr 'a string table past the file is refused'  10 30000
+mal_hdr 'a negative boolean count is refused'      4  -1
+mal_hdr 'a negative string table size is refused'  10 -1
+
+# A string offset pointing outside the table. This was accepted, silently:
+# ti_str returned NULL for it, dump_strs skips NULL as "capability absent",
+# and the file was reported valid with the capability simply missing -- a
+# plausible answer about a broken file, which is the worst of the three
+# possible outcomes because nothing tells you.
+python3 -c 'import sys,struct
+b=bytearray(open(sys.argv[1],"rb").read())
+names,bools,nums,strs=struct.unpack_from("<hhhh",b,2)
+off=12+names+bools; off+=off&1; off+=nums*2
+struct.pack_into("<h",b,off+2*int(sys.argv[3]),int(sys.argv[4]))
+open(sys.argv[2],"wb").write(b)' "$mal_base" "$mal/s.ti" 0 30000
+err=$("$TERMINFO_BIN" -d "$mal/s.ti" 2>&1 >/dev/null); rc=$?
+case "$rc:$err" in
+0:*)  bad "a string offset past the table is accepted" ;;
+*:)   bad "a string offset past the table is refused with no diagnostic" ;;
+*)    ok  "a string offset past the table is refused: ${err#terminfo: }" ;;
+esac
+
+# And the control: the file it was all derived from still parses.
+if "$TERMINFO_BIN" -d "$mal_base" >/dev/null 2>&1; then
+	ok "the unmodified base file still parses, so the sabotage is what was refused"
+else
+	bad "the unmodified base file does not parse"
+fi
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
