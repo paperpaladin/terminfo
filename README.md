@@ -15,7 +15,7 @@ strtable 1552
 name xterm|xterm terminal emulator (X Window System)
 
 $ make test
-10 passed, 0 failed
+24 passed, 0 failed
 ```
 
 ## The part a reader cannot get from the file
