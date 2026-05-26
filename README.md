@@ -1,7 +1,7 @@
 # terminfo
 
-Reads the **compiled** terminfo binary format. One C11 file, no ncurses and
-no libtinfo -- the point of the exercise is to read the bytes.
+Reads the compiled terminfo binary format. One C11 file, no ncurses and
+no libtinfo: the point of the exercise is to read the bytes.
 
 ```
 $ ./terminfo -i /usr/share/terminfo/x/xterm
@@ -20,16 +20,16 @@ $ make test
 
 ## The part a reader cannot get from the file
 
-A compiled terminfo file stores capabilities **positionally**. The name of
+A compiled terminfo file stores capabilities positionally. The name of
 the capability at index 0 of the boolean array is not in the file. It is in
 a table every reader is expected to already have, in ncurses' order.
 
 So a reader can parse every byte of the format correctly and still be
-completely wrong, by holding that table in a different order -- and nothing
+completely wrong, by holding that table in a different order, and nothing
 about the file will say so. That failure mode is invisible to any test that
 only checks the file parsed.
 
-**The tables here were not typed out from a document.** They were derived
+The tables here were not typed out from a document. They were derived
 from two things on this machine that we do not control:
 
 - `/usr/include/term.h`, which fixes the long name at every index
@@ -39,7 +39,7 @@ from two things on this machine that we do not control:
   the index plus one.
 
 `t/derive-caps.py` regenerates exactly what is pasted into `terminfo.c`, so
-the tables are reproducible rather than trusted.
+the tables are reproducible, not trusted.
 
 ## The oracle is ncurses, as a subprocess
 
@@ -60,11 +60,11 @@ cancelled: 9 exist, so -2 is distinguished from -1 on real data
 ```
 
 Every capability value the harness compares comes from `infocmp`, in both
-directions, rather than from a number anybody worked out by hand. The four
-floors are the exception and are hand-written on purpose -- at least 30
-terminals, 200 booleans, 100 numbers, 4000 strings -- and they exist so that
+directions, not from a number anybody worked out by hand. The four
+floors are the exception and are hand-written on purpose: at least 30
+terminals, 200 booleans, 100 numbers, 4000 strings, and they exist so that
 a corpus too thin to prove anything cannot pass. They are reported as a thin
-corpus rather than as a disagreement, because the combined form used to print
+corpus, not as a disagreement, because the combined form used to print
 "booleans: 0 terminals disagree with infocmp, 191 compared" as a failure.
 
 (This paragraph used to say nothing in the harness compares against a
@@ -74,11 +74,11 @@ hand-worked number, which the floors contradict.)
 
 Magic 0432 stores numeric capabilities as signed 16-bit integers; magic
 01036 stores them as signed 32-bit integers and is otherwise identical. The
-width comes from the header's magic rather than from guessing at the
+width comes from the header's magic, not from guessing at the
 section size.
 
-The assertion that matters is not that the wide values agree -- it is that
-**some value could not have been read any other way**:
+The assertion that matters is not that the wide values agree. It is that
+some value could not have been read any other way:
 
 ```
 numbers: 5 values exceed 32767, which a 16-bit decode could not represent
@@ -95,7 +95,7 @@ check, a reader that quietly fell back to 16 bits would still agree with
 This replaced the weakest assertion the harness had: it used to skip every
 magic 01036 file and assert that the skip count was exactly 5, which is a
 hardcoded fact about *this machine* and true nowhere else. Reading them
-deleted the assertion rather than making it more precise.
+deleted the assertion instead of making it more precise.
 
 ## Two sentinels, not one
 
@@ -108,21 +108,21 @@ apart.
 
 Between sections the file is padded to an even byte boundary. Getting it
 wrong shifts every number, every string offset and the whole extended
-section by exactly one byte -- and the result is still a file that parses,
+section by exactly one byte, and the result is still a file that parses,
 with plausible-looking wrong values. That is why it has its own deliberate
-sabotage in the harness rather than being left to the value comparison.
+sabotage in the harness instead of being left to the value comparison.
 
 ## Strings are compared as bytes, not as notation
 
 4584 string capabilities across 44 terminals, byte for byte against
-`infocmp`. The comparison is in **hex**, and that is the decision worth
+`infocmp`. The comparison is in hex, and that is the decision worth
 explaining.
 
 A string capability is arbitrary bytes, and terminfo's source notation has
-several spellings for the same byte -- `\E`, `\e` and `\033` are all ESC.
+several spellings for the same byte: `\E`, `\e` and `\033` are all ESC.
 Printing that notation from the reader under test and diffing the text would
 compare `infocmp` against an imitation of itself, and would pass or fail on
-spelling rather than on bytes. So `terminfo -d` emits hex, and
+spelling, not on bytes. So `terminfo -d` emits hex, and
 `t/caps-hex.py` decodes `infocmp`'s notation with a decoder that shares
 nothing with the reader: one parses escape sequences out of text, the other
 walks an offset table in a binary file. A bug common to both is not a bug
@@ -131,22 +131,22 @@ either could hide.
 Three things the comparison turned up, none of which was a bug in the
 reader:
 
-**`acsc` is the one capability `infocmp` does not print as stored.** It is a
+`acsc` is the one capability `infocmp` does not print as stored. It is a
 sequence of (from, to) byte pairs, and `infocmp` *sorts* them. Three
-terminals here -- `hurd` and two `rxvt-unicode` variants -- store them in an
+terminals here: `hurd` and two `rxvt-unicode` variants, store them in an
 order it does not reproduce, with the identical multiset of pairs. Both
 sides are normalised through one function, so the comparison is between the
-set of pairs, which is what `acsc` means; comparing the order would assert
+set of pairs, which is what `acsc` means. Comparing the order would assert
 something `term(5)` does not promise.
 
-**A capability can be defined as the empty string**, which is not the same
+A capability can be defined as the empty string, which is not the same
 as being absent. `Eterm` defines `smkx` and `rmkx` that way. The first
 version of the comparison used `split()`, which collapses an empty field, and
 the two sides then disagreed about a capability both had read correctly. Six
 of them exist and the count is asserted.
 
-**Cancellation needed its own section, and a mutation found out why.**
-Making the reader treat `-2` (cancelled) as `-1` (absent) **survived** the
+Cancellation needed its own section, and a mutation found out why.
+Making the reader treat `-2` (cancelled) as `-1` (absent) survived the
 string comparison, because a cancelled capability is emitted as `s@` and the
 comparison only looked at `s ` lines. Nine cancelled capabilities exist in
 this corpus across booleans, numbers and strings, `infocmp` prints all three
@@ -161,19 +161,19 @@ Both are malformed-file cases, and no file in this corpus is malformed:
 - `strlen` instead of a `memchr` bounded by the table, so an unterminated
   string at the table's end would read past it
 
-They are untested machinery rather than untested behaviour, and deliberately
+They are untested machinery, not untested behaviour, and deliberately
 trying malformed files is the next planned item. Recorded here because a
 mutation that survives is a fact about the suite, and leaving it out would
 make this section claim more than it has.
 
 ## The suite refuses a stale binary
 
-`t/run.sh` does not compile anything -- `make test` depends on `terminfo`, so the
+`t/run.sh` does not compile anything: `make test` depends on `terminfo`, so the
 normal path rebuilds first. Run directly after an edit, it used to report
 six passes for a binary built *before* the edit.
 
 That is not a hypothetical. Three mutations of the number decoder were each
-recorded as **surviving** against a stale binary, and all three are caught
+recorded as surviving against a stale binary, and all three are caught
 the moment it is rebuilt: a `ti_num` that ignores the width, an `le32` that
 reads three bytes, and an `le32` that is unsigned so the sentinels stop
 being negative. The suite was testing code that no longer existed.
@@ -184,15 +184,15 @@ suite.
 
 ## What does not work
 
-**The ncurses extended-capability section is not read.** It is where
+The ncurses extended-capability section is not read. It is where
 user-defined capabilities such as `Smulx` and `setrgbf` live, and where
 `term(5)` stops documenting. `xterm` here has 183 predefined string
 capabilities and `infocmp -x` reports 269, so roughly a third of what the
-file holds is still unread -- which is why the string comparison runs
+file holds is still unread, which is why the string comparison runs
 `infocmp` *without* `-x`: asking for extended capabilities would report 86
 absences per terminal that are not defects.
 
-**Parameterised strings are not evaluated.** A capability like `cup` is a
+Parameterised strings are not evaluated. A capability like `cup` is a
 small stack program; `tput cup 3 4` is the external authority for what it
 evaluates to, and nothing here calls it yet. That is item 06 of `PLAN.md`,
 and the only one here whose oracle is not `infocmp`.
@@ -202,28 +202,28 @@ and the only one here whose oracle is not `infocmp`.
 Item 07, and it found something. The suite truncates a real compiled entry at
 every byte through the header and the early sections, then at a stride to the
 end, in both modes: 626 runs, no signals, and every refusal carrying a
-diagnostic. The header is sabotaged field by field -- wrong magic, counts
-larger than the file, negative counts -- and each is refused.
+diagnostic. The header is sabotaged field by field, wrong magic, counts
+larger than the file, negative counts, and each is refused.
 
 The assertion worth having is not "it does not crash". It is that the first
 *accepted* truncation is exactly the end of the sections this parser reads,
-computed from the header rather than written down: 12-byte header, names,
+computed from the header, not written down: 12-byte header, names,
 booleans, pad to even, two bytes per number and per string offset, then the
-string table. A truncation before that is a file that must be refused; after
+string table. A truncation before that is a file that must be refused. After
 it lies the ncurses extended section, which this does not read and whose
 absence is not an error. One number pins both directions.
 
 What it found: **a string offset pointing outside the string table was
-accepted in silence.** `ti_str` refused the offset and returned `NULL` --
+accepted in silence.** `ti_str` refused the offset and returned `NULL`,
 which is also how it reports a capability that is legitimately absent, so
 `dump_strs` skipped it, and a corrupt file was read as valid with the
 capability quietly missing. Exit 0, no diagnostic. The comment on that line
-already said "malformed file rather than an empty capability"; the code did
+already said "malformed file, not an empty capability". The code did
 the other thing.
 
 The offset array is validated at parse time now, which is what `count_ok`
-already does for the counts and for the reason given there -- refuse it here
-rather than at a later read that happens to cope:
+already does for the counts and for the reason given there, refuse it here,
+not at a later read that happens to cope:
 
 ```
 terminfo: string 0 has offset 30000, outside a 580-byte string table
@@ -232,7 +232,7 @@ terminfo: string 0 has offset 30000, outside a 580-byte string table
 All 41 compiled entries on this machine still parse. Removing the check turns
 that assertion red; removing the cursor's bounds check turns two more red.
 
-**Malformed files have never been tried on purpose.** The cursor bounds-checks
+Malformed files have never been tried on purpose. The cursor bounds-checks
 every read and its error flag is sticky, and that code has never been watched
 to fail. Until item 07 it is untested machinery.
 
