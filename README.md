@@ -93,8 +93,8 @@ check, a reader that quietly fell back to 16 bits would still agree with
 `infocmp` on every number small enough to fit, which is almost all of them.
 
 This replaced the weakest assertion the harness had: it used to skip every
-magic 01036 file and assert that the skip count was exactly 5, which is a
-hardcoded fact about *this machine* and true nowhere else. Reading them
+magic 01036 file and assert that the skip count was exactly 5, a hardcoded
+fact about *this machine* and true nowhere else. Reading them
 deleted the assertion instead of making it more precise.
 
 ## Two sentinels, not one
@@ -136,10 +136,10 @@ sequence of (from, to) byte pairs, and `infocmp` *sorts* them. Three
 terminals here: `hurd` and two `rxvt-unicode` variants, store them in an
 order it does not reproduce, with the identical multiset of pairs. Both
 sides are normalised through one function, so the comparison is between the
-set of pairs, which is what `acsc` means. Comparing the order would assert
+set of pairs, the thing `acsc` means. Comparing the order would assert
 something `term(5)` does not promise.
 
-A capability can be defined as the empty string, which is not the same
+A capability can be defined as the empty string, and that is not the same
 as being absent. `Eterm` defines `smkx` and `rmkx` that way. The first
 version of the comparison used `split()`, which collapses an empty field, and
 the two sides then disagreed about a capability both had read correctly. Six
@@ -188,7 +188,7 @@ The ncurses extended-capability section is not read. It is where
 user-defined capabilities such as `Smulx` and `setrgbf` live, and where
 `term(5)` stops documenting. `xterm` here has 183 predefined string
 capabilities and `infocmp -x` reports 269, so roughly a third of what the
-file holds is still unread, which is why the string comparison runs
+file holds is still unread, so the string comparison runs
 `infocmp` *without* `-x`: asking for extended capabilities would report 86
 absences per terminal that are not defects.
 
@@ -221,8 +221,8 @@ capability quietly missing. Exit 0, no diagnostic. The comment on that line
 already said "malformed file, not an empty capability". The code did
 the other thing.
 
-The offset array is validated at parse time now, which is what `count_ok`
-already does for the counts and for the reason given there, refuse it here,
+The offset array is validated at parse time now, as `count_ok` already
+does for the counts and for the reason given there, refuse it here,
 not at a later read that happens to cope:
 
 ```
