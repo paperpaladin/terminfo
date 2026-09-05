@@ -150,10 +150,10 @@ should be, it does not get reported as if we knew.
             them; hurd and two rxvt-unicode variants store them in an order
             it does not reproduce, with the identical multiset of pairs.
             Both sides are normalised through one function so the
-            comparison is between the set of pairs, which is what acsc
+            comparison is between the set of pairs, the thing acsc
             means. Comparing the order would assert something term(5) does
             not promise.
-      found: a capability can be defined as the EMPTY string, which is not
+      found: a capability can be defined as the EMPTY string, and that is not
             the same as absent, Eterm defines smkx and rmkx that way. The
             first comparison used split(), which collapses an empty field,
             and the two sides then disagreed about a capability both had
