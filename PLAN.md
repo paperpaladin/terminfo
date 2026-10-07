@@ -26,7 +26,7 @@ Not "a plausible value", not "the value `term.h` suggests should be at that
 index": the value ncurses itself prints for that terminal, compared across
 every compiled description on the machine.
 
-A compiled file stores capabilities positionally: the name of the
+A compiled file stores capabilities positionally. The name of the
 capability at index `i` lives in a table every reader is
 expected to already have. So a reader can parse every byte correctly and
 still be completely wrong, by holding the table in a different order. That
