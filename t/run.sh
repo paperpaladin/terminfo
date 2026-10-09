@@ -60,5 +60,33 @@ done
 [ "$n32" -gt 0 ] && ok "extended-number format (01036) read: $n32 terminals" \
 	|| bad "no 32-bit-number terminal in the corpus"
 
+# ------------------------------------------------- booleans against infocmp
+# `infocmp -x -1` prints one capability per line; a bare name is a boolean
+# that is present. `name@` is a capability cancelled in the source, and
+# infocmp spells that the same way whether the capability is a boolean, a
+# number or a string -- so cancellations are compared as a kind-agnostic set
+# later, once numbers and strings exist, rather than guessed at here.
+#
+# At this commit the predefined booleans are a strict subset of infocmp's
+# list, because the extended section (which holds AX, XT, U8 and friends) is
+# not read yet. Subset still bites: a wrong name or a shifted index drops
+# straight out of it.
+nbool=0
+nbad=0
+for f in $corpus; do
+	t=${f##*/}
+	infocmp -x -1 "$t" 2>/dev/null 		| sed -n 's/^	\([a-zA-Z0-9_]*\)\(@\{0,1\}\),$/\1\2/p' 		| sort > "$work/want"
+	"$TERMINFO_BIN" -d "$f" 		| sed -n 's/^b \(.*\)$/\1/p;s/^b@ \(.*\)$/\1@/p' 		| sort > "$work/got"
+	if [ -z "$(comm -13 "$work/want" "$work/got")" ]; then
+		nbool=$((nbool + $(grep -c . < "$work/got")))
+	else
+		nbad=$((nbad+1))
+		[ "$nbad" -le 3 ] && comm -13 "$work/want" "$work/got" | head -6
+	fi
+done
+[ "$nbad" -eq 0 ] && [ "$nbool" -gt 200 ] \
+	&& ok "predefined booleans are infocmp's ($nbool across $nterm terminals)" \
+	|| bad "booleans: $nbad terminals disagree with infocmp, $nbool compared"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

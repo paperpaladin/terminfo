@@ -112,6 +112,31 @@ le16(const unsigned char *p)
 	return (int) (int16_t) ((unsigned) p[0] | ((unsigned) p[1] << 8));
 }
 
+/* --------------------------------------------------------- capability names
+ * A compiled file stores capabilities positionally: the name of the
+ * capability at index i of the boolean array is not in the file, it is in a
+ * table every reader is expected to already have. The ordering is ncurses'
+ * (the `Caps` file), and these tables were not typed out from a document.
+ * They were derived from two things on this machine that we do not control:
+ * /usr/include/term.h, which fixes the long name at every index
+ * (`#define auto_left_margin CUR Booleans[0]`), and `tic` itself, asked
+ * which index it puts a given short name at -- compile `probe, <name>,` and
+ * read the resulting boolean count, which is the index plus one. See
+ * t/derive-caps.py, which regenerates exactly what is pasted here.
+ *
+ * Indices at and past 37 (booleans), 33 (numbers) and 394 (strings) are
+ * ncurses' obsolete capabilities, named OT-something. tic does write them
+ * -- xterm here has 38 booleans, so OTbs is in the file -- and a reader that
+ * stops at the "standard" counts gets the array length wrong.
+ */
+static const char *const bool_names[44] = {
+	"bw", "am", "xsb", "xhp", "xenl", "eo", "gn", "hc", "km", "hs", "in", "da",
+	"db", "mir", "msgr", "os", "eslok", "xt", "hz", "ul", "xon", "nxon", "mc5i",
+	"chts", "nrrmc", "npc", "ndscr", "ccc", "bce", "hls", "xhpa", "crxm",
+	"daisy", "xvpa", "sam", "cpix", "lpix", "OTbs", "OTns", "OTnc", "OTMT",
+	"OTNL", "OTpt", "OTxr",
+};
+
 /* ------------------------------------------------------------------- entry */
 
 typedef struct {
@@ -288,7 +313,52 @@ ti_free(entry *e)
 	e->raw = NULL;
 }
 
+/* -------------------------------------------------------------- accessors */
+
+/*
+ * Booleans are one byte each. ncurses writes 0 for absent, 1 for present and
+ * 2 (CANCELLED_BOOLEAN) for a capability explicitly cancelled with `cap@` in
+ * the source. Those three are different facts: absent means the database has
+ * nothing to say, cancelled means it says the terminal does not have it, and
+ * infocmp prints only the last two.
+ */
+static int
+ti_bool(const entry *e, int i)
+{
+	if (i < 0 || i >= e->nbool)
+		return 0;
+	return e->bools[i];
+}
+
 /* ------------------------------------------------------------------ output */
+
+static void
+dump_bools(const entry *e)
+{
+	int i;
+
+	for (i = 0; i < e->nbool; i++) {
+		const char *nm = i < 44 ? bool_names[i] : NULL;
+		int v = ti_bool(e, i);
+
+		if (v == 0)
+			continue;
+		if (!nm) {
+			printf("b? %d %d\n", i, v);
+			continue;
+		}
+		printf("%s %s\n", v == 2 ? "b@" : "b", nm);
+	}
+}
+
+static int
+mode_dump(const entry *e)
+{
+	printf("name %s\n", e->names);
+	dump_bools(e);
+	return 0;
+}
+
 
 static int
 mode_info(const entry *e)
@@ -308,7 +378,8 @@ static void
 usage(void)
 {
 	fprintf(stderr,
-		"usage: terminfo -i FILE              header facts\n");
+		"usage: terminfo -i FILE              header facts\n"
+		"       terminfo -d FILE              dump every capability\n");
 }
 
 int
@@ -323,13 +394,13 @@ main(int argc, char **argv)
 		usage();
 		return 2;
 	}
-	if (strcmp(argv[1], "-i") != 0) {
+	if (strcmp(argv[1], "-i") != 0 && strcmp(argv[1], "-d") != 0) {
 		usage();
 		return 2;
 	}
 	if (!ti_parse(&e, argv[2]))
 		return 1;
-	rc = mode_info(&e);
+	rc = argv[1][1] == 'i' ? mode_info(&e) : mode_dump(&e);
 	ti_free(&e);
 	return rc;
 }
