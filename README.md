@@ -202,7 +202,7 @@ and the only one here whose oracle is not `infocmp`.
 Item 07, and it found something. The suite truncates a real compiled entry at
 every byte through the header and the early sections, then at a stride to the
 end, in both modes: 626 runs, no signals, and every refusal carrying a
-diagnostic. The header is sabotaged field by field, wrong magic, counts
+diagnostic. Its header is sabotaged field by field, wrong magic, counts
 larger than the file, negative counts, and each is refused.
 
 The assertion worth having is not "it does not crash". It is that the first
@@ -218,8 +218,7 @@ accepted in silence.** `ti_str` refused the offset and returned `NULL`,
 which is also how it reports a capability that is legitimately absent, so
 `dump_strs` skipped it, and a corrupt file was read as valid with the
 capability quietly missing. Exit 0, no diagnostic. The comment on that line
-already said "malformed file, not an empty capability". The code did
-the other thing.
+already said "malformed file, not an empty capability". It did the other thing.
 
 The offset array is validated at parse time now, as `count_ok` already
 does for the counts and for the reason given there, refuse it here,
