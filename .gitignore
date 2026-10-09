@@ -1,0 +1,5 @@
+terminfo
+terminfo-asan
+t/tmp/
+*.o
+t/__pycache__/

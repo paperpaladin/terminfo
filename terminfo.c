@@ -1,0 +1,335 @@
+/*
+ * terminfo -- a reader for the compiled terminfo binary format.
+ *
+ * One C11 file, no ncurses and no libtinfo: the point of the exercise is to
+ * read the bytes. `infocmp`, `tic` and `tput` appear only in the test
+ * harness, as references, invoked as subprocesses.
+ *
+ * Two formats are handled. The legacy one (magic 0432, documented in
+ * term(5)) stores numeric capabilities as signed 16-bit integers; the
+ * extended-number format (magic 01036, ncurses 6.1 and later) stores them as
+ * signed 32-bit integers and is otherwise identical. Both may carry the
+ * ncurses extended-capability section after the string table, which is where
+ * user-defined capabilities such as Smulx and setrgbf live.
+ *
+ * Everything that follows the twelve-byte header is addressed by an offset
+ * or a count taken from the file, so every read goes through a cursor that
+ * knows the file's length. The cursor's error flag is sticky: once set, all
+ * further reads return zero and the caller checks once at the end.
+ */
+#define _POSIX_C_SOURCE 200809L
+
+#include <ctype.h>
+#include <errno.h>
+#include <limits.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#define MAGIC_LEGACY 0432
+#define MAGIC_NUM32  01036
+
+/* term(5) limits. A file claiming more than this is malformed, not large. */
+#define MAX_SECTION 4096
+#define MAX_STRTAB  (1 << 20)
+
+/* ncurses' sentinels, stored in the number array and the offset array. */
+#define TI_ABSENT	(-1)
+#define TI_CANCELLED	(-2)
+
+static const char *prog = "terminfo";
+
+static void diag(const char *fmt, ...)
+#if defined(__GNUC__)
+	__attribute__((format(printf, 1, 2)))
+#endif
+	;
+
+#include <stdarg.h>
+
+static void
+diag(const char *fmt, ...)
+{
+	va_list ap;
+	va_start(ap, fmt);
+	fprintf(stderr, "%s: ", prog);
+	vfprintf(stderr, fmt, ap);
+	fputc('\n', stderr);
+	va_end(ap);
+}
+
+/* ------------------------------------------------------------------ cursor */
+
+typedef struct {
+	const unsigned char *base;
+	size_t len;
+	size_t at;
+	int bad;			/* sticky */
+} cursor;
+
+static void
+fail(cursor *c, const char *why)
+{
+	if (!c->bad) {
+		c->bad = 1;
+		diag("%s", why);
+	}
+}
+
+/* Advance past n bytes and hand back a pointer to them, or NULL. */
+static const unsigned char *
+take(cursor *c, size_t n)
+{
+	const unsigned char *p;
+
+	if (c->bad)
+		return NULL;
+	if (n > c->len - c->at) {	/* at <= len always, so no overflow */
+		fail(c, "truncated: section runs past end of file");
+		return NULL;
+	}
+	p = c->base + c->at;
+	c->at += n;
+	return p;
+}
+
+/*
+ * Between sections the file is padded to an even byte boundary. Getting this
+ * wrong shifts every number, every string offset and the whole extended
+ * section by one byte, which is why it has its own sabotage in the harness.
+ */
+static void
+align_even(cursor *c)
+{
+	if (c->at & 1u)
+		(void) take(c, 1);
+}
+
+static int
+le16(const unsigned char *p)
+{
+	return (int) (int16_t) ((unsigned) p[0] | ((unsigned) p[1] << 8));
+}
+
+/* ------------------------------------------------------------------- entry */
+
+typedef struct {
+	unsigned char *raw;
+	size_t rawlen;
+
+	int magic;
+	int numsize;			/* 2 legacy, 4 extended-number */
+
+	int nnames, nbool, nnum, nstr, strsz;
+	const char *names;		/* NUL-terminated, "name|alias|desc" */
+	const unsigned char *bools;
+	const unsigned char *nums;
+	const unsigned char *offs;
+	const char *strtab;
+
+	int has_ext;
+	int eb, en, es, eitems, esz;
+	const unsigned char *ebools;
+	const unsigned char *enums;
+	const unsigned char *eoffs;	/* es values, then eb+en+es names */
+	const char *etab;
+	int ebase;			/* names start here within etab */
+} entry;
+
+static unsigned char *
+slurp(const char *path, size_t *outlen)
+{
+	FILE *f;
+	unsigned char *buf = NULL;
+	size_t cap = 0, got = 0;
+
+	f = fopen(path, "rb");
+	if (!f) {
+		diag("%s: %s", path, strerror(errno));
+		return NULL;
+	}
+	for (;;) {
+		size_t n;
+
+		if (got == cap) {
+			unsigned char *nb;
+
+			if (cap > (size_t) 16 << 20) {
+				diag("%s: absurdly large for a terminfo file",
+				     path);
+				free(buf);
+				fclose(f);
+				return NULL;
+			}
+			cap = cap ? cap * 2 : 8192;
+			nb = realloc(buf, cap);
+			if (!nb) {
+				diag("out of memory");
+				free(buf);
+				fclose(f);
+				return NULL;
+			}
+			buf = nb;
+		}
+		n = fread(buf + got, 1, cap - got, f);
+		got += n;
+		if (n == 0)
+			break;
+	}
+	if (ferror(f)) {
+		diag("%s: %s", path, strerror(errno));
+		free(buf);
+		fclose(f);
+		return NULL;
+	}
+	fclose(f);
+	*outlen = got;
+	return buf;
+}
+
+static int
+count_ok(cursor *c, int v, int limit, const char *what)
+{
+	if (v < 0 || v > limit) {
+		char msg[128];
+
+		snprintf(msg, sizeof msg, "bad %s count %d", what, v);
+		fail(c, msg);
+		return 0;
+	}
+	return 1;
+}
+
+/*
+ * Parse the header and locate every section. The counts are read before any
+ * of them is used, so a count that cannot be right is refused here rather
+ * than by a later read that happens to run off the end.
+ */
+static int
+ti_parse(entry *e, const char *path)
+{
+	cursor c;
+	const unsigned char *h;
+
+	memset(e, 0, sizeof *e);
+	e->raw = slurp(path, &e->rawlen);
+	if (!e->raw)
+		return 0;
+
+	c.base = e->raw;
+	c.len = e->rawlen;
+	c.at = 0;
+	c.bad = 0;
+
+	h = take(&c, 12);
+	if (!h) {
+		fail(&c, "too short for a terminfo header");
+		goto out;
+	}
+	e->magic = le16(h);
+	if (e->magic == MAGIC_LEGACY)
+		e->numsize = 2;
+	else if (e->magic == MAGIC_NUM32)
+		e->numsize = 4;
+	else {
+		char msg[96];
+
+		snprintf(msg, sizeof msg,
+			 "not a terminfo file: magic 0%o, want 0432 or 01036",
+			 (unsigned) (e->magic & 0xffff));
+		fail(&c, msg);
+		goto out;
+	}
+	e->nnames = le16(h + 2);
+	e->nbool  = le16(h + 4);
+	e->nnum   = le16(h + 6);
+	e->nstr   = le16(h + 8);
+	e->strsz  = le16(h + 10);
+
+	if (!count_ok(&c, e->nnames, MAX_SECTION, "name") ||
+	    !count_ok(&c, e->nbool, MAX_SECTION, "boolean") ||
+	    !count_ok(&c, e->nnum, MAX_SECTION, "number") ||
+	    !count_ok(&c, e->nstr, MAX_SECTION, "string") ||
+	    !count_ok(&c, e->strsz, MAX_STRTAB, "string table"))
+		goto out;
+	if (e->nnames == 0) {
+		fail(&c, "empty names section");
+		goto out;
+	}
+
+	e->names = (const char *) take(&c, (size_t) e->nnames);
+	e->bools = take(&c, (size_t) e->nbool);
+	align_even(&c);
+	e->nums = take(&c, (size_t) e->nnum * (size_t) e->numsize);
+	e->offs = take(&c, (size_t) e->nstr * 2);
+	e->strtab = (const char *) take(&c, (size_t) e->strsz);
+	if (c.bad)
+		goto out;
+
+	if (e->names[e->nnames - 1] != '\0') {
+		fail(&c, "names section is not NUL-terminated");
+		goto out;
+	}
+
+out:
+	if (c.bad) {
+		free(e->raw);
+		e->raw = NULL;
+		return 0;
+	}
+	return 1;
+}
+
+static void
+ti_free(entry *e)
+{
+	free(e->raw);
+	e->raw = NULL;
+}
+
+/* ------------------------------------------------------------------ output */
+
+static int
+mode_info(const entry *e)
+{
+	printf("magic 0%o\n", (unsigned) e->magic);
+	printf("numsize %d\n", e->numsize);
+	printf("names %d\n", e->nnames);
+	printf("bools %d\n", e->nbool);
+	printf("nums %d\n", e->nnum);
+	printf("strs %d\n", e->nstr);
+	printf("strtable %d\n", e->strsz);
+	printf("name %s\n", e->names);
+	return 0;
+}
+
+static void
+usage(void)
+{
+	fprintf(stderr,
+		"usage: terminfo -i FILE              header facts\n");
+}
+
+int
+main(int argc, char **argv)
+{
+	entry e;
+	int rc;
+
+	if (argc > 0 && argv[0][0])
+		prog = "terminfo";
+	if (argc < 3) {
+		usage();
+		return 2;
+	}
+	if (strcmp(argv[1], "-i") != 0) {
+		usage();
+		return 2;
+	}
+	if (!ti_parse(&e, argv[2]))
+		return 1;
+	rc = mode_info(&e);
+	ti_free(&e);
+	return rc;
+}
