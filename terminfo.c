@@ -35,6 +35,12 @@
 #define MAX_STRTAB  (1 << 20)
 
 /* ncurses' sentinels, stored in the number array and the offset array. */
+/* A pointer value that is not a string and not NULL, so ti_str can report
+ * three outcomes through one return. Its address is the sentinel; its
+ * contents are never read. */
+static const char ti_cancel_marker;
+#define TI_CANCEL_STR	(&ti_cancel_marker)
+
 #define TI_ABSENT	(-1)
 #define TI_CANCELLED	(-2)
 
@@ -157,6 +163,53 @@ static const char *const num_names[39] = {
 	"ma", "wnum", "colors", "pairs", "ncv", "bufsz", "spinv", "spinh", "maddr",
 	"mjump", "mcs", "mls", "npins", "orc", "orl", "orhi", "orvi", "cps", "widcs",
 	"btns", "bitwin", "bitype", "OTug", "OTdC", "OTdN", "OTdB", "OTdT", "OTkn",
+};
+
+static const char *const str_names[414] = {
+	"cbt", "bel", "cr", "csr", "tbc", "clear", "el", "ed", "hpa", "cmdch", "cup",
+	"cud1", "home", "civis", "cub1", "mrcup", "cnorm", "cuf1", "ll", "cuu1",
+	"cvvis", "dch1", "dl1", "dsl", "hd", "smacs", "blink", "bold", "smcup",
+	"smdc", "dim", "smir", "invis", "prot", "rev", "smso", "smul", "ech",
+	"rmacs", "sgr0", "rmcup", "rmdc", "rmir", "rmso", "rmul", "flash", "ff",
+	"fsl", "is1", "is2", "is3", "if", "ich1", "il1", "ip", "kbs", "ktbc", "kclr",
+	"kctab", "kdch1", "kdl1", "kcud1", "krmir", "kel", "ked", "kf0", "kf1",
+	"kf10", "kf2", "kf3", "kf4", "kf5", "kf6", "kf7", "kf8", "kf9", "khome",
+	"kich1", "kil1", "kcub1", "kll", "knp", "kpp", "kcuf1", "kind", "kri",
+	"khts", "kcuu1", "rmkx", "smkx", "lf0", "lf1", "lf10", "lf2", "lf3", "lf4",
+	"lf5", "lf6", "lf7", "lf8", "lf9", "rmm", "smm", "nel", "pad", "dch", "dl",
+	"cud", "ich", "indn", "il", "cub", "cuf", "rin", "cuu", "pfkey", "pfloc",
+	"pfx", "mc0", "mc4", "mc5", "rep", "rs1", "rs2", "rs3", "rf", "rc", "vpa",
+	"sc", "ind", "ri", "sgr", "hts", "wind", "ht", "tsl", "uc", "hu", "iprog",
+	"ka1", "ka3", "kb2", "kc1", "kc3", "mc5p", "rmp", "acsc", "pln", "kcbt",
+	"smxon", "rmxon", "smam", "rmam", "xonc", "xoffc", "enacs", "smln", "rmln",
+	"kbeg", "kcan", "kclo", "kcmd", "kcpy", "kcrt", "kend", "kent", "kext",
+	"kfnd", "khlp", "kmrk", "kmsg", "kmov", "knxt", "kopn", "kopt", "kprv",
+	"kprt", "krdo", "kref", "krfr", "krpl", "krst", "kres", "ksav", "kspd",
+	"kund", "kBEG", "kCAN", "kCMD", "kCPY", "kCRT", "kDC", "kDL", "kslt", "kEND",
+	"kEOL", "kEXT", "kFND", "kHLP", "kHOM", "kIC", "kLFT", "kMSG", "kMOV",
+	"kNXT", "kOPT", "kPRV", "kPRT", "kRDO", "kRPL", "kRIT", "kRES", "kSAV",
+	"kSPD", "kUND", "rfi", "kf11", "kf12", "kf13", "kf14", "kf15", "kf16",
+	"kf17", "kf18", "kf19", "kf20", "kf21", "kf22", "kf23", "kf24", "kf25",
+	"kf26", "kf27", "kf28", "kf29", "kf30", "kf31", "kf32", "kf33", "kf34",
+	"kf35", "kf36", "kf37", "kf38", "kf39", "kf40", "kf41", "kf42", "kf43",
+	"kf44", "kf45", "kf46", "kf47", "kf48", "kf49", "kf50", "kf51", "kf52",
+	"kf53", "kf54", "kf55", "kf56", "kf57", "kf58", "kf59", "kf60", "kf61",
+	"kf62", "kf63", "el1", "mgc", "smgl", "smgr", "fln", "sclk", "dclk", "rmclk",
+	"cwin", "wingo", "hup", "dial", "qdial", "tone", "pulse", "hook", "pause",
+	"wait", "u0", "u1", "u2", "u3", "u4", "u5", "u6", "u7", "u8", "u9", "op",
+	"oc", "initc", "initp", "scp", "setf", "setb", "cpi", "lpi", "chr", "cvr",
+	"defc", "swidm", "sdrfq", "sitm", "slm", "smicm", "snlq", "snrmq", "sshm",
+	"ssubm", "ssupm", "sum", "rwidm", "ritm", "rlm", "rmicm", "rshm", "rsubm",
+	"rsupm", "rum", "mhpa", "mcud1", "mcub1", "mcuf1", "mvpa", "mcuu1", "porder",
+	"mcud", "mcub", "mcuf", "mcuu", "scs", "smgb", "smgbp", "smglp", "smgrp",
+	"smgt", "smgtp", "sbim", "scsd", "rbim", "rcsd", "subcs", "supcs", "docr",
+	"zerom", "csnm", "kmous", "minfo", "reqmp", "getm", "setaf", "setab", "pfxl",
+	"devt", "csin", "s0ds", "s1ds", "s2ds", "s3ds", "smglr", "smgtb", "birep",
+	"binel", "bicr", "colornm", "defbi", "endbi", "setcolor", "slines", "dispc",
+	"smpch", "rmpch", "smsc", "rmsc", "pctrm", "scesc", "scesa", "ehhlm",
+	"elhlm", "elohlm", "erhlm", "ethlm", "evhlm", "sgr1", "slength", "OTi2",
+	"OTrs", "OTnl", "OTbc", "OTko", "OTma", "OTG2", "OTG3", "OTG1", "OTG4",
+	"OTGR", "OTGL", "OTGU", "OTGD", "OTGH", "OTGV", "OTGC", "meml", "memu", NULL,
 };
 
 /* ------------------------------------------------------------------- entry */
@@ -374,7 +427,80 @@ ti_num(const entry *e, int i)
 	return le16(e->nums + (size_t) i * 2);
 }
 
+/* A string capability is an OFFSET into the string table, not a string.
+ *
+ * Three things can be wrong here and only the first is obvious. The offset
+ * may be -1 (absent) or -2 (cancelled), exactly like a number. It may point
+ * past the end of the table, which is a malformed file rather than an empty
+ * capability. And the table is not guaranteed to be NUL-terminated at its
+ * end, so a string whose terminator is missing must not be read off the end
+ * -- which is why the length is computed with memchr inside the table's own
+ * bounds instead of with strlen.
+ */
+static const char *
+ti_str(const entry *e, int i, size_t *len)
+{
+	int off;
+	const char *p;
+	const void *nul;
+
+	*len = 0;
+	if (i < 0 || i >= e->nstr)
+		return NULL;
+	off = le16(e->offs + (size_t) i * 2);
+	if (off == TI_ABSENT)
+		return NULL;
+	if (off == TI_CANCELLED)
+		return TI_CANCEL_STR;
+	if (off < 0 || (size_t) off >= (size_t) e->strsz)
+		return NULL;		/* malformed: offset past the table */
+	p = e->strtab + off;
+	nul = memchr(p, 0, (size_t) e->strsz - (size_t) off);
+	if (!nul)
+		return NULL;		/* unterminated at the table's end */
+	*len = (size_t) ((const char *) nul - p);
+	return p;
+}
+
 /* ------------------------------------------------------------------ output */
+
+/* Emitted as HEX rather than in terminfo's own escape notation.
+ *
+ * A string capability is arbitrary bytes -- escapes, control characters,
+ * sometimes a NUL-free binary blob -- and rendering it the way infocmp
+ * renders it would mean comparing infocmp against an imitation of itself.
+ * Hex has one spelling per byte string, so the harness can decode
+ * infocmp's notation with a separate decoder and compare bytes to bytes.
+ */
+static void
+dump_strs(const entry *e)
+{
+	int i;
+
+	for (i = 0; i < e->nstr; i++) {
+		size_t n;
+		const char *v = ti_str(e, i, &n);
+		const char *nm = i < 414 ? str_names[i] : NULL;
+
+		if (!v)
+			continue;
+		if (v == TI_CANCEL_STR) {
+			if (nm)
+				printf("s@ %s\n", nm);
+			else
+				printf("s@? %d\n", i);
+			continue;
+		}
+		if (!nm) {
+			printf("s? %d ", i);
+		} else {
+			printf("s %s ", nm);
+		}
+		for (size_t k = 0; k < n; k++)
+			printf("%02x", (unsigned char) v[k]);
+		putchar('\n');
+	}
+}
 
 static void
 dump_nums(const entry *e)
@@ -426,6 +552,7 @@ mode_dump(const entry *e)
 	printf("name %s\n", e->names);
 	dump_bools(e);
 	dump_nums(e);
+	dump_strs(e);
 	return 0;
 }
 
