@@ -112,6 +112,22 @@ le16(const unsigned char *p)
 	return (int) (int16_t) ((unsigned) p[0] | ((unsigned) p[1] << 8));
 }
 
+/* The extended-number format's numeric cell. Signed, like le16, and the
+ * sign matters for exactly the same reason: -1 and -2 are the two
+ * not-a-value markers rather than values.
+ *
+ * Cast through int32_t rather than shifting into a signed int, because
+ * p[3] << 24 with the top bit set is undefined when int is 32 bits -- the
+ * one place where the obvious spelling of this is wrong. */
+static long
+le32(const unsigned char *p)
+{
+	uint32_t v = (uint32_t) p[0] | ((uint32_t) p[1] << 8)
+		   | ((uint32_t) p[2] << 16) | ((uint32_t) p[3] << 24);
+
+	return (long) (int32_t) v;
+}
+
 /* --------------------------------------------------------- capability names
  * A compiled file stores capabilities positionally: the name of the
  * capability at index i of the boolean array is not in the file, it is in a
@@ -342,15 +358,19 @@ ti_bool(const entry *e, int i)
  * capability does not apply. infocmp prints nothing for the first and
  * `cap@` for the second, so conflating them loses a fact.
  *
- * shortcut: le16 only, so magic 01036 files are misread here. The 32-bit
- * decode arrives with its own commit; until then the harness asserts
- * exactly how many terminals it is skipping, so the gap cannot go quiet.
+ * Both widths are read here, chosen by the header's magic rather than by
+ * guessing from the section size: numsize is 2 for magic 0432 and 4 for
+ * magic 01036, and the two formats are otherwise identical. The sentinels
+ * are the same two values in both, which is why TI_ABSENT and TI_CANCELLED
+ * need no width of their own.
  */
 static long
 ti_num(const entry *e, int i)
 {
 	if (i < 0 || i >= e->nnum)
 		return TI_ABSENT;
+	if (e->numsize == 4)
+		return le32(e->nums + (size_t) i * 4);
 	return le16(e->nums + (size_t) i * 2);
 }
 

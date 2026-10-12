@@ -101,11 +101,32 @@ should be, it does not get reported as if we knew.
       proves: 177 numeric values across the 39 legacy-format terminals are
             `infocmp`'s, and the 5 extended-number terminals are skipped
             deliberately rather than read wrongly.
-- [ ] 03 32-bit numbers, so the 5 skipped terminals stop being skipped
-      why: the suite currently asserts that exactly 5 terminals are
-           skipped, which is a hardcoded fact about this machine and the
-           weakest thing in the harness. Reading them removes the
-           assertion rather than making it more precise.
+- [x] 03 32-bit numbers, so the 5 skipped terminals stop being skipped
+      why: the suite asserted that exactly 5 terminals were skipped, which
+           is a hardcoded fact about this machine and the weakest thing in
+           the harness. Reading them removes the assertion rather than
+           making it more precise.
+      done: le32 beside le16, with the width taken from the header's magic
+            rather than guessed from the section size. The cast goes
+            through int32_t rather than shifting into a signed int, because
+            p[3] << 24 with the top bit set is undefined when int is 32
+            bits -- the one place where the obvious spelling is wrong.
+      proves: 202 numbers across all 44 terminals, up from 177 across 39.
+            And the assertion that actually matters is not that the wide
+            values agree but that FIVE OF THEM EXCEED 32767, which a 16-bit
+            decode could not represent at all. Without that, a reader
+            quietly falling back to 16 bits would still agree with infocmp
+            on every number small enough to fit, which is almost all of
+            them. pairs#65536 on a 256-colour terminal is the usual one.
+      found: THE SUITE WAS TESTING A STALE BINARY. t/run.sh compiles
+            nothing, and run directly after an edit it reported six passes
+            for a binary built before the edit. Three mutations of the
+            number decoder were each recorded as SURVIVING, and all three
+            are caught the moment it is rebuilt -- a ti_num ignoring the
+            width, an le32 reading three bytes, and an unsigned le32 whose
+            sentinels stop being negative. It now refuses to run when
+            terminfo.c is newer than the binary and exits non-zero saying
+            so. A suite that cannot tell which code it ran is not a suite.
 - [ ] 04 the string table and the offset array
       why: it is the largest section and the one with the most ways to be
            subtly wrong: offsets are into a separate table, -1 means
@@ -130,6 +151,7 @@ should be, it does not get reported as if we knew.
 - Whether to read `$TERMINFO`-style directory hierarchies, or stay a
   file-at-a-time reader. The second is a smaller contract and the harness
   does the walking already.
-- The suite asserts "5 terminals skipped", which is true of this machine
-  and nowhere else. Item 03 deletes the assertion; until then it is a known
-  reason this suite is not portable.
+- RESOLVED by item 03: the "5 terminals skipped" assertion is gone, and
+  what replaced it is portable -- "some number exceeds 32767" is true of any
+  corpus containing a 256-colour terminal, and false of one that does not,
+  which is the right way round for an assertion about this decoder.

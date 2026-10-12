@@ -26,6 +26,23 @@ ok()  { pass=$((pass+1)); printf 'ok   %s\n' "$*"; }
 bad() { fail=$((fail+1)); printf 'FAIL %s\n' "$*"; }
 
 [ -x "$TERMINFO_BIN" ] || { echo "no terminfo binary at $TERMINFO_BIN (run make)"; exit 1; }
+
+# Refuse a binary older than the source it is supposed to be testing.
+#
+# This script does not compile anything -- `make test` depends on `all`, so
+# the normal path is fine -- but run directly after an edit it happily
+# reported six passes for a binary built before the edit. That is not a
+# hypothetical: three mutations of the number decoder were each recorded as
+# SURVIVING against a stale binary, and all three are caught the moment it
+# is rebuilt. A suite that cannot tell which code it ran is not a suite.
+#
+# shortcut: -nt is not in POSIX test, it is a widely implemented extension;
+# dash and bash both have it, which covers every /bin/sh this will meet.
+if [ "$root/terminfo.c" -nt "$TERMINFO_BIN" ]; then
+	echo "terminfo.c is newer than $TERMINFO_BIN -- run make." >&2
+	echo "Refusing to report results for a binary that is not the source." >&2
+	exit 1
+fi
 command -v infocmp >/dev/null || { echo "infocmp not found; no oracle"; exit 1; }
 command -v tic     >/dev/null || { echo "tic not found; no oracle"; exit 1; }
 command -v tput    >/dev/null || { echo "tput not found; no oracle"; exit 1; }
@@ -89,18 +106,18 @@ done
 	|| bad "booleans: $nbad terminals disagree with infocmp, $nbool compared"
 
 # -------------------------------------------------- numbers against infocmp
-# `name#value`, a subset until the extended section lands. Skipped for 01036, whose numbers are 4 bytes and are
-# not decoded yet -- the skip count is asserted so that the gap is a number
-# in the output and not a silence.
+# `name#value`, across BOTH formats. This used to skip every magic 01036
+# file and assert the skip count was exactly 5 -- a hardcoded fact about
+# this machine, and the weakest assertion in this harness. Reading the
+# 32-bit numbers deletes it rather than making it more precise.
 nnum=0
 nbad=0
-nskip=0
+nwide=0
+nbig=0
 for f in $corpus; do
 	t=${f##*/}
-	if [ "$("$TERMINFO_BIN" -i "$f" | sed -n 's/^magic //p')" = 01036 ]; then
-		nskip=$((nskip+1))
-		continue
-	fi
+	[ "$("$TERMINFO_BIN" -i "$f" | sed -n 's/^numsize //p')" = 4 ] &&
+		nwide=$((nwide+1))
 	# infocmp renders any value above 255 in hex (colors#0x100), so the
 	# oracle's text is normalised to decimal before comparing. Comparing
 	# the rendering instead of the value would be comparing infocmp to
@@ -110,6 +127,10 @@ for f in $corpus; do
 		| while read -r nm v; do printf '%s %d\n' "$nm" "$((v))"; done \
 		| sort > "$work/want"
 	"$TERMINFO_BIN" -d "$f" | sed -n 's/^n //p' | sort > "$work/got"
+	# Values above 32767 cannot be read at all by a 16-bit decode, so
+	# they are counted separately: they are the ones that prove the
+	# extended format is being read rather than merely accepted.
+	nbig=$((nbig + $(awk '$2 > 32767' < "$work/got" | grep -c . || true)))
 	if [ -z "$(comm -13 "$work/want" "$work/got")" ]; then
 		nnum=$((nnum + $(grep -c . < "$work/got")))
 	else
@@ -118,10 +139,14 @@ for f in $corpus; do
 	fi
 done
 [ "$nbad" -eq 0 ] && [ "$nnum" -gt 100 ] \
-	&& ok "16-bit numbers are infocmp's ($nnum across $((nterm-nskip)) terminals)" \
+	&& ok "numbers are infocmp's ($nnum across all $nterm terminals, $nwide of them 32-bit)" \
 	|| bad "numbers: $nbad terminals disagree with infocmp, $nnum compared"
-[ "$nskip" -eq 5 ] && ok "numbers: $nskip 32-bit-format terminals skipped, as expected" \
-	|| bad "numbers: skipped $nskip 32-bit-format terminals, expected 5"
+# A 16-bit read cannot produce these at all, so this is the assertion that
+# the wide decode is doing something rather than being skipped quietly.
+# `pairs#65536` on a 256-colour terminal is the usual one.
+[ "$nbig" -gt 0 ] \
+	&& ok "numbers: $nbig values exceed 32767, which a 16-bit decode could not represent" \
+	|| bad "no number above 32767 was read, so the 32-bit decode is untested"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
