@@ -1,11 +1,19 @@
 #!/bin/sh
 # terminfo test suite.
 #
-# The oracle is ncurses, used as three separate authorities invoked as
-# subprocesses: `infocmp` for what every capability of every terminal on this
-# machine should be, `tic` for the source round-trip, and `tput` for what a
-# parameterised string evaluates to. Nothing here compares our output against
-# a number anybody writing this harness worked out by hand.
+# The oracle is ncurses, invoked as a subprocess: `infocmp` for what every
+# capability of every terminal on this machine should be, compared in both
+# directions. Capability values are never compared against a number anybody
+# writing this harness worked out by hand; the four size floors are, and they
+# are there so a corpus too thin to prove anything cannot pass.
+#
+# This header used to claim three authorities -- adding `tic` for the source
+# round-trip and `tput` for what a parameterised string evaluates to. Neither
+# binary is ever invoked here: they are only checked for existence at the top,
+# so a machine with infocmp and no tput got `exit 1` for a tool the suite does
+# not use. `tic` does feed t/derive-caps.py, which re-derives the capability
+# name tables, but `make test` does not run it. `tput` is PLAN item 06,
+# unticked, and the README says so.
 #
 # /usr/share/terminfo is treated as strictly read-only. Everything is built
 # under t/tmp/, inside this repo: other agents run concurrently on this
@@ -44,8 +52,11 @@ if [ "$root/terminfo.c" -nt "$TERMINFO_BIN" ]; then
 	exit 1
 fi
 command -v infocmp >/dev/null || { echo "infocmp not found; no oracle"; exit 1; }
-command -v tic     >/dev/null || { echo "tic not found; no oracle"; exit 1; }
-command -v tput    >/dev/null || { echo "tput not found; no oracle"; exit 1; }
+# tic is needed by t/derive-caps.py, which `make test` does not run, so its
+# absence is noted rather than fatal. tput is not used at all yet (PLAN item
+# 06); requiring it meant a machine with infocmp and no tput ran nothing.
+command -v tic  >/dev/null || echo "note: tic absent; t/derive-caps.py cannot re-derive the name tables"
+command -v tput >/dev/null || echo "note: tput absent; not used by this suite yet (PLAN item 06)"
 [ -d "$TIDIR" ]  || { echo "no terminfo corpus at $TIDIR"; exit 1; }
 
 # ---------------------------------------------------------------- the corpus
@@ -88,22 +99,76 @@ done
 # list, because the extended section (which holds AX, XT, U8 and friends) is
 # not read yet. Subset still bites: a wrong name or a shifted index drops
 # straight out of it.
+# The predefined capability names, from /usr/include/term.h, via the same
+# parser t/derive-caps.py uses. These are what separates a capability this
+# reader is supposed to know from an ncurses *extended* one (PLAN item 05,
+# unticked) -- infocmp -x reports both, and only the first kind is a bug when
+# missing. Taking the list from term.h rather than from terminfo.c keeps the
+# comparison independent of the code under test.
+# derive-caps.py emits the C tables it derives from `tic` probes plus
+# term.h; its stdout carries the SHORT names, which is what infocmp prints.
+# term_h_longnames() alone is the wrong source here -- it gives
+# backspaces_with_bs where infocmp says OTbs, so filtering on it removed
+# every name and made the check vacuous again. Found that by re-running the
+# mutation this check exists for and watching it still pass.
+python3 "$root/t/derive-caps.py" 2>/dev/null > "$work/caps.c" \
+	|| bad "derive-caps.py failed, so predefined names are unknown"
+sed -n '/bool_names\[/,/};/p' "$work/caps.c" \
+	| grep -o '"[^"]*"' | tr -d '"' | sort > "$work/predef_b"
+sed -n '/num_names\[/,/};/p' "$work/caps.c" \
+	| grep -o '"[^"]*"' | tr -d '"' | sort > "$work/predef_n"
+[ "$(grep -c . < "$work/predef_b")" -eq 44 ] || bad "term.h gave $(grep -c . < "$work/predef_b") boolean names, expected 44"
+
 nbool=0
 nbad=0
 for f in $corpus; do
 	t=${f##*/}
 	infocmp -x -1 "$t" 2>/dev/null 		| sed -n 's/^	\([a-zA-Z0-9_]*\)\(@\{0,1\}\),$/\1\2/p' 		| sort > "$work/want"
 	"$TERMINFO_BIN" -d "$f" 		| sed -n 's/^b \(.*\)$/\1/p;s/^b@ \(.*\)$/\1@/p' 		| sort > "$work/got"
-	if [ -z "$(comm -13 "$work/want" "$work/got")" ]; then
+	# Both directions. `comm -13` alone reports only what WE have and
+	# infocmp does not -- so a decoder that stopped early and simply failed
+	# to report capabilities passed. Truncating dump_bools to the first 37
+	# took the count from 294 to 257 and left the suite green, which is
+	# exactly the failure mode PLAN.md:93 names ("a reader that stops at
+	# the 'standard' count gets the array length wrong"). The strings and
+	# cancelled sections were already two-way; these two were not.
+	#
+	# The missing-from-ours direction uses `infocmp -1` without -x, in
+	# "$work/want_std": with -x, want carries the ncurses extended
+	# capabilities, which this reader does not implement by design (PLAN
+	# item 05). OT* names are dropped as infocmp's own obsolete aliases.
+	# Measured over the corpus: zero terminals, zero names.
+	extra=$(comm -13 "$work/want" "$work/got")
+	# `missing` is restricted to predefined names: an extended capability
+	# infocmp -x reports and this reader does not is the documented gap,
+	# not a defect. OT* names ARE predefined -- they sit at indices 37-43,
+	# which is exactly where a truncated walk loses them, so filtering
+	# them out (as a first attempt did) hid the bug this check exists for.
+	missing=$(comm -23 "$work/want" "$work/got" | sed 's/@$//' \
+		| sort -u | comm -12 - "$work/predef_b")
+	if [ -z "$extra" ] && [ -z "$missing" ]; then
 		nbool=$((nbool + $(grep -c . < "$work/got")))
 	else
 		nbad=$((nbad+1))
-		[ "$nbad" -le 3 ] && comm -13 "$work/want" "$work/got" | head -6
+		if [ "$nbad" -le 3 ]; then
+			[ -n "$extra" ] && printf '  %s: we report, infocmp does not: %s\n' \
+				"$t" "$(printf '%s' "$extra" | tr '\n' ' ')"
+			[ -n "$missing" ] && printf '  %s: infocmp reports, we do not: %s\n' \
+				"$t" "$(printf '%s' "$missing" | tr '\n' ' ')"
+		fi
 	fi
 done
-[ "$nbad" -eq 0 ] && [ "$nbool" -gt 200 ] \
-	&& ok "predefined booleans are infocmp's ($nbool across $nterm terminals)" \
-	|| bad "booleans: $nbad terminals disagree with infocmp, $nbool compared"
+if [ "$nbad" -ne 0 ]; then
+	bad "booleans: $nbad terminals disagree with infocmp, $nbool compared"
+elif [ "$nbool" -le 200 ]; then
+	# A thin corpus is not a disagreement. Reported separately because the
+	# combined form printed "booleans: 0 terminals disagree with infocmp, N
+	# compared" as a FAILURE -- blaming infocmp for a corpus that was
+	# simply too small to prove anything.
+	bad "booleans: only $nbool compared across $nterm terminals, under the 200 floor"
+else
+	ok "predefined booleans are infocmp's ($nbool across $nterm terminals)"
+fi
 
 # -------------------------------------------------- numbers against infocmp
 # `name#value`, across BOTH formats. This used to skip every magic 01036
@@ -131,16 +196,37 @@ for f in $corpus; do
 	# they are counted separately: they are the ones that prove the
 	# extended format is being read rather than merely accepted.
 	nbig=$((nbig + $(awk '$2 > 32767' < "$work/got" | grep -c . || true)))
-	if [ -z "$(comm -13 "$work/want" "$work/got")" ]; then
+	# Both directions, as with the booleans above: `comm -13` alone could
+	# not see a number we failed to report, and truncating dump_nums to the
+	# first 20 took the count from 202 to 198 with the suite still green.
+	# The missing-from-ours side uses infocmp without -x, since the
+	# extended section is not implemented.
+	extra=$(comm -13 "$work/want" "$work/got")
+	missing=$(comm -23 "$work/want" "$work/got" | awk '{print $1}' \
+		| sed 's/@$//' | sort -u | comm -12 - "$work/predef_n")
+	if [ -z "$extra" ] && [ -z "$missing" ]; then
 		nnum=$((nnum + $(grep -c . < "$work/got")))
 	else
 		nbad=$((nbad+1))
-		[ "$nbad" -le 3 ] && comm -13 "$work/want" "$work/got" | head -6
+		if [ "$nbad" -le 3 ]; then
+			[ -n "$extra" ] && printf '  %s: we report, infocmp does not: %s\n' \
+				"$t" "$(printf '%s' "$extra" | tr '\n' ' ')"
+			[ -n "$missing" ] && printf '  %s: infocmp reports, we do not: %s\n' \
+				"$t" "$(printf '%s' "$missing" | tr '\n' ' ')"
+		fi
 	fi
 done
-[ "$nbad" -eq 0 ] && [ "$nnum" -gt 100 ] \
-	&& ok "numbers are infocmp's ($nnum across all $nterm terminals, $nwide of them 32-bit)" \
-	|| bad "numbers: $nbad terminals disagree with infocmp, $nnum compared"
+if [ "$nbad" -ne 0 ]; then
+	bad "numbers: $nbad terminals disagree with infocmp, $nnum compared"
+elif [ "$nnum" -le 100 ]; then
+	# A thin corpus is not a disagreement. Reported separately because the
+	# combined form printed "numbers: 0 terminals disagree with infocmp, N
+	# compared" as a FAILURE -- blaming infocmp for a corpus that was
+	# simply too small to prove anything.
+	bad "numbers: only $nnum compared across $nterm terminals, under the 100 floor"
+else
+	ok "numbers are infocmp's ($nnum across all $nterm terminals, $nwide of them 32-bit)"
+fi
 # A 16-bit read cannot produce these at all, so this is the assertion that
 # the wide decode is doing something rather than being skipped quietly.
 # `pairs#65536` on a 256-colour terminal is the usual one.
@@ -187,9 +273,17 @@ for f in $corpus; do
 		[ "$nbad" -le 3 ] && comm -3 "$work/sgot" "$work/swant" | head -6
 	fi
 done
-[ "$nbad" -eq 0 ] && [ "$nstr" -gt 4000 ] \
-	&& ok "string capabilities are infocmp's, byte for byte ($nstr across $nterm terminals)" \
-	|| bad "strings: $nbad terminals disagree with infocmp, $nstr compared"
+if [ "$nbad" -ne 0 ]; then
+	bad "strings: $nbad terminals disagree with infocmp, $nstr compared"
+elif [ "$nstr" -le 4000 ]; then
+	# A thin corpus is not a disagreement. Reported separately because the
+	# combined form printed "strings: 0 terminals disagree with infocmp, N
+	# compared" as a FAILURE -- blaming infocmp for a corpus that was
+	# simply too small to prove anything.
+	bad "strings: only $nstr compared across $nterm terminals, under the 4000 floor"
+else
+	ok "string capabilities are infocmp's, byte for byte ($nstr across $nterm terminals)"
+fi
 [ "$nempty" -gt 0 ] \
 	&& ok "strings: $nempty are defined as the EMPTY string, which is not the same as absent" \
 	|| bad "no empty-valued string capability was read, so that case is untested"
