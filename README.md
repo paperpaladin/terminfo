@@ -194,9 +194,43 @@ absences per terminal that are not defects.
 
 **Parameterised strings are not evaluated.** A capability like `cup` is a
 small stack program; `tput cup 3 4` is the external authority for what it
-evaluates to, and nothing here calls it yet. The harness's own header
-mentions `tic` and `tput` as oracles, which is ahead of what it currently
-does -- items 06 and 07 of `PLAN.md` are what make that true.
+evaluates to, and nothing here calls it yet. That is item 06 of `PLAN.md`,
+and the only one here whose oracle is not `infocmp`.
+
+## Malformed files
+
+Item 07, and it found something. The suite truncates a real compiled entry at
+every byte through the header and the early sections, then at a stride to the
+end, in both modes: 626 runs, no signals, and every refusal carrying a
+diagnostic. The header is sabotaged field by field -- wrong magic, counts
+larger than the file, negative counts -- and each is refused.
+
+The assertion worth having is not "it does not crash". It is that the first
+*accepted* truncation is exactly the end of the sections this parser reads,
+computed from the header rather than written down: 12-byte header, names,
+booleans, pad to even, two bytes per number and per string offset, then the
+string table. A truncation before that is a file that must be refused; after
+it lies the ncurses extended section, which this does not read and whose
+absence is not an error. One number pins both directions.
+
+What it found: **a string offset pointing outside the string table was
+accepted in silence.** `ti_str` refused the offset and returned `NULL` --
+which is also how it reports a capability that is legitimately absent, so
+`dump_strs` skipped it, and a corrupt file was read as valid with the
+capability quietly missing. Exit 0, no diagnostic. The comment on that line
+already said "malformed file rather than an empty capability"; the code did
+the other thing.
+
+The offset array is validated at parse time now, which is what `count_ok`
+already does for the counts and for the reason given there -- refuse it here
+rather than at a later read that happens to cope:
+
+```
+terminfo: string 0 has offset 30000, outside a 580-byte string table
+```
+
+All 41 compiled entries on this machine still parse. Removing the check turns
+that assertion red; removing the cursor's bounds check turns two more red.
 
 **Malformed files have never been tried on purpose.** The cursor bounds-checks
 every read and its error flag is sticky, and that code has never been watched

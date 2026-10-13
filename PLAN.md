@@ -177,7 +177,7 @@ should be, it does not get reported as if we knew.
       why: a string capability such as `cup` is a tiny stack program, and
            `tput cup 3 4` is an external authority for what it evaluates
            to. This is the only item here whose oracle is not `infocmp`.
-- [ ] 07 malformed files on purpose
+- [x] 07 malformed files on purpose
       why: the cursor's bounds checking has never been watched to fail.
            Truncate at each section boundary, claim a section larger than
            the file, point an offset past the string table, and assert a
