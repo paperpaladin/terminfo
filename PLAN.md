@@ -52,8 +52,13 @@ Ranked by how little of it we control.
 3. `/usr/include/term.h`, which fixes the long name at every index
    (`#define auto_left_margin CUR Booleans[0]`). A second, independent
    source for the same ordering.
-4. `tput`, for what a parameterised string evaluates to. Not used yet;
-   see the commit sequence.
+4. `tput`, for what a parameterised string evaluates to. This is the one
+   question infocmp cannot answer: it says what the program IS, byte for
+   byte, and a reader that stored the bytes and understood none of them
+   would satisfy it. 3834 evaluations across 43 terminals and six
+   parameter tuples, plus 32 on an entry `tic` compiles from a probe
+   source so that the nine operators no real entry here uses are run as
+   well.
 
 `/usr/share/terminfo` is treated as strictly read-only, and everything the
 harness builds goes under `t/tmp/` inside this repo, not a shared
@@ -220,10 +225,80 @@ should be, it does not get reported as if we knew.
       skip: no entry under /usr/share/terminfo cancels an extended
             capability, so the xb@/xn@/xs@ paths are written from the format
             and unproven. The suite prints that on every run.
-- [ ] 06 parameterised strings evaluated against `tput`
+- [x] 06 parameterised strings evaluated against `tput`
       why: a string capability such as `cup` is a tiny stack program, and
            `tput cup 3 4` is an external authority for what it evaluates
            to. This is the only item here whose oracle is not `infocmp`.
+      files: terminfo.c (tp_skip, tparm_eval, dump_param, the -p mode),
+            t/run.sh (section 06 and the tic-compiled probe), Makefile,
+            README.md.
+      done: an evaluator for the whole of terminfo(5)'s stack language in
+            one function, plus `terminfo -p FILE ARG...`, which evaluates
+            every string capability holding a % and prints the result as
+            hex. It does NOT decide which of its answers are worth
+            checking: t/run.sh picks the comparable set out of infocmp's
+            own text, because a filter living in the code under test would
+            be the code choosing its own examination.
+      proves: 3834 evaluations across 43 terminals agree with `tput` byte
+            for byte, 639 distinct terminal/capability pairs at six
+            parameter tuples each, and 18 of the language's operators are
+            reached. Not the count that matters on its own: the suite also
+            asserts WHICH operators the compared set reaches, because a
+            sweep can agree about four thousand evaluations having run
+            three opcodes.
+      done: the six tuples are not arbitrary. The conditionals in this
+            corpus compare against 1, 3, 4, 6, 7, 8 and 16, so the first
+            parameter takes the values 0, 1, 7, 8, 16 and 200: one on each
+            side of every boundary and one ON it. With 1 and 9 only,
+            turning `%<` into `%<=` changes no answer anywhere in the
+            corpus and the mutation survives having broken the decoder.
+      found: TPUT FOUND A REAL BUG, in the branch skipper. `%{3}` inside a
+            skipped else-branch was stepped over by one byte too many, so
+            the scan never found the closing `%;` and everything after the
+            conditional was swallowed. One capability on one terminal
+            showed it, `xm` on screen.xterm-256color, and only for the
+            parameter tuples that take the then-arm.
+      found: `%c` of zero emits 0200, not NUL. ncurses cannot put a NUL in
+            the string it is building, so it substitutes the high bit, and
+            `tput -T ansi rep 0 0` starts with the byte 0x80.
+      note: three classes are excluded from the comparison and each one is
+            counted and printed on every run, so the set that is not
+            compared cannot grow in silence. 7 padded capabilities ($<>),
+            because tput is tparm plus tputs and tputs is what strips the
+            padding spec; 14 with a string-valued parameter (%s, %l),
+            which this evaluator refuses rather than inventing an argument
+            for; and 44 termcap-style (u6, u8), which use %d with nothing
+            pushed, a rule ncurses has and terminfo(5) does not state.
+      done: nine operators (%m %& %^ %! %~ %A %O %P %g) are reached by no
+            entry on this machine. Rather than leave them written from the
+            document, `tic` compiles a probe entry that uses them into
+            t/tmp and `tput` evaluates it with $TERMINFO pointed there. The
+            program is ours, like any terminfo source; the answer is still
+            ncurses'. A check ties the two together: every operator the
+            corpus misses must appear in the probe source, or the suite
+            fails rather than printing a longer list of unproven things.
+      mutations: 28 planted, 27 caught. 24 in the evaluator: %c of zero;
+            the %{n} skip bug itself; %i incrementing one parameter; %t
+            taking the wrong arm; %- reversed; %< as <=; %> as >=; %pN
+            always pushing p1; %{n} pushing zero; width dropped from the
+            conversion; the extended strings not evaluated; the last
+            output byte dropped; %A as %&; %O as %|; %! as %~; %~ as %!;
+            %& as %|; %^ as %&; %m as %/; %P discarding its value; %g
+            reading the dynamic variables for a static one; the %/ zero
+            guard removed; and the `:` flag introducer ignored. The %<
+            and %> pair fail on 10 and 2 terminal/tuple pairs out of 3834,
+            which is what the boundary values in the tuples buy.
+            4 in the harness: an empty operator census, a dropped
+            parameter tuple, the comparison reading its own answer back as
+            the oracle's, and an operator removed from the probe source
+            while the corpus still does not reach it.
+      survived: one, and it is equivalent. In the branch skipper, stepping
+            over `%'c'` by two bytes instead of four lands on the quoted
+            character itself, and tp_skip reacts to nothing but a `%`: if
+            the quoted character is not `%` the scan walks it and the
+            closing quote and arrives at the same place, and if it IS `%`
+            the pair re-enters the same case and arrives at the same
+            place. The two spellings cannot differ on any input.
 - [x] 07 malformed files on purpose
       why: the cursor's bounds checking has never been watched to fail.
            Truncate at each section boundary, claim a section larger than
@@ -235,6 +310,11 @@ should be, it does not get reported as if we knew.
 - Whether to read `$TERMINFO`-style directory hierarchies, or stay a
   file-at-a-time reader. The second is a smaller contract and the harness
   does the walking already.
+- Whether `%s` and `%l` are worth supporting. They need a string-valued
+  parameter, `-p` takes numbers only, and the 14 capabilities that use them
+  here are all `Cs` and `Ms`. Supporting them means deciding how a string
+  argument reaches the command line, which is a CLI question rather than a
+  decoding one.
 - RESOLVED by item 03: the "5 terminals skipped" assertion is gone, and
   what replaced it is portable, "some number exceeds 32767" is true of any
   corpus containing a 256-colour terminal, and false of one that does not,

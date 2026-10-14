@@ -1,19 +1,20 @@
 #!/bin/sh
 # terminfo test suite.
 #
-# The oracle is ncurses, invoked as a subprocess: `infocmp` for what every
+# The oracle is ncurses, invoked as a subprocess. `infocmp` says what every
 # capability of every terminal on this machine should be, compared in both
-# directions. Capability values are never compared against a number anybody
-# writing this harness worked out by hand; the four size floors are, and they
-# are there so a corpus too thin to prove anything cannot pass.
+# directions. `tput` says what a parameterised string EVALUATES TO, which is
+# the one question infocmp cannot answer and which section 06 asks. Capability
+# values are never compared against a number anybody writing this harness
+# worked out by hand; the size floors are, and they are there so a corpus too
+# thin to prove anything cannot pass.
 #
-# This header used to claim three authorities -- adding `tic` for the source
-# round-trip and `tput` for what a parameterised string evaluates to. Neither
-# binary is ever invoked here: they are only checked for existence at the top,
-# so a machine with infocmp and no tput got `exit 1` for a tool the suite does
-# not use. `tic` does feed t/derive-caps.py, which re-derives the capability
-# name tables, but `make test` does not run it. `tput` is PLAN item 06,
-# unticked, and the README says so.
+# `tput` was required here once before it was used, so a machine with infocmp
+# and no tput got `exit 1` for a tool the suite never invoked, and the
+# requirement was dropped. It is back, and this time the exit is honest:
+# without tput nothing checks that this reader understands the programs it
+# stores, only that it stores them. `tic` is still only noted, because
+# nothing `make test` runs invokes it: it feeds t/derive-caps.py.
 #
 # /usr/share/terminfo is treated as strictly read-only. Everything is built
 # under t/tmp/, inside this repo: other agents run concurrently on this
@@ -53,10 +54,12 @@ if [ "$root/terminfo.c" -nt "$TERMINFO_BIN" ]; then
 fi
 command -v infocmp >/dev/null || { echo "infocmp not found; no oracle"; exit 1; }
 # tic is needed by t/derive-caps.py, which `make test` does not run, so its
-# absence is noted rather than fatal. tput is not used at all yet (PLAN item
-# 06); requiring it meant a machine with infocmp and no tput ran nothing.
+# absence is noted rather than fatal. tput is the only oracle section 06 has,
+# and a run without it would print passes for everything else while silently
+# not evaluating a single parameterised string -- so it is fatal and loud,
+# like infocmp above, rather than a note nobody reads.
 command -v tic  >/dev/null || echo "note: tic absent; t/derive-caps.py cannot re-derive the name tables"
-command -v tput >/dev/null || echo "note: tput absent; not used by this suite yet (PLAN item 06)"
+command -v tput >/dev/null || { echo "tput not found; no oracle for parameterised strings (PLAN item 06)"; exit 1; }
 [ -d "$TIDIR" ]  || { echo "no terminfo corpus at $TIDIR"; exit 1; }
 
 # ---------------------------------------------------------------- the corpus
@@ -412,6 +415,241 @@ done
 printf 'note: %d extended string capabilities in this corpus are ABSENT (-1)\n' "$nxabs"
 printf 'note: SKIP, no cancelled extended capability exists under %s, so the\n' "$TIDIR"
 printf '      xb@/xn@/xs@ paths are written from the format and unproven here\n'
+
+printf '\n--- 06 parameterised strings evaluated against tput\n'
+# PLAN item 06, and the only section here whose oracle is not infocmp.
+#
+# A string capability such as cup is a program for a stack machine:
+# `\E[%i%p1%d;%p2%dH`. infocmp can say what the PROGRAM is, byte for byte,
+# and the sections above do exactly that. It cannot say what the program
+# RUNS TO, so everything above would pass for a reader that stored the
+# bytes and understood none of them. `tput -T TERM cap args` is ncurses
+# evaluating the same program, and that is the authority here.
+#
+# Six parameter tuples per capability, and the values in them are not
+# arbitrary. The conditionals in this corpus compare against the constants
+# 1, 3, 4, 6, 7, 8 and 16, so the tuples put 0, 1, 7, 8, 16 and 200 in the
+# first parameter: one on each side of every boundary and one ON it. That is
+# what makes an off-by-one mutation of %< or %> reachable -- with a first
+# parameter of 1 and 9 only, turning `%<` into `<=` changes no answer in the
+# whole corpus and the mutation survives having broken the decoder. 200 is
+# there as well because it is where setaf and setab switch to their
+# 256-colour forms and where %c stops being printable.
+#
+# What is NOT compared, and why each exclusion is the oracle's own text
+# rather than a judgement made here:
+#
+#   $<...>  padding. `tput` is tparm plus tputs, and tputs is what strips a
+#           padding spec and decides how many pad characters to emit from
+#           the baud rate. Comparing a padded capability would be comparing
+#           this evaluator against something else.
+#   %s %l   a string-valued parameter. This evaluator takes numbers only
+#           and refuses these rather than inventing an argument for them.
+#   no %p   the termcap-style capabilities, u6 and u8 here, which use %d
+#           with nothing pushed. ncurses has a rule for that; it is not in
+#           terminfo(5), and guessing it would be writing the oracle's
+#           answer down rather than asking for it.
+#
+# Each exclusion is counted and printed, so the set that is not compared
+# cannot grow in silence.
+pnum=0
+pbad=0
+pterms=0
+ptuples=0
+pskip_pad=0
+pskip_str=0
+pskip_nop=0
+: > "$work/pvals"
+for args in '1 1 1 1 1 1 1 1 1' '0 0 0 0 0 0 0 0 0' '7 3 4 6 1 0 2 5 8' \
+	    '8 16 7 1 3 4 6 0 2' '16 8 7 3 1 4 6 2 0' '200 100 50 25 12 6 3 1 0'; do
+	ptuples=$((ptuples+1))
+	pterms=0
+	for f in $corpus; do
+		t=${f##*/}
+		# Classify every parameterised capability from infocmp's
+		# rendering of it. The code under test gets no say in which
+		# of its answers are examined: it prints a line for every
+		# string holding a %, and this is what picks them out.
+		infocmp -x -1 "$t" 2>/dev/null | awk '
+			/^\t[a-zA-Z0-9_]+=/ {
+				line = substr($0, 2)
+				eq = index(line, "=")
+				nm = substr(line, 1, eq - 1)
+				v  = substr(line, eq + 1)
+				sub(/,$/, "", v)
+				b = v
+				gsub(/%%/, "", b)
+				if (b !~ /%/) next
+				if (v ~ /\$</)			{ pad++; next }
+				if (b !~ /%p/)			{ nop++; next }
+				if (b ~ /%l/ || b ~ /%[-+# 0-9.:]*s/)	{ str++; next }
+				print "E " nm " " v
+			}
+			END { print "C " pad+0 " " nop+0 " " str+0 }
+		' > "$work/pclass"
+		sed -n 's/^E \([^ ]*\) \(.*\)$/\1 \2/p' "$work/pclass" > "$work/pelig"
+		# Counted on the first tuple only: the classification is of
+		# the capability, not of the arguments, so adding it up six
+		# times would report six times as many exclusions as exist.
+		if [ "$ptuples" -eq 1 ]; then
+			set -- $(sed -n 's/^C //p' "$work/pclass")
+			pskip_pad=$((pskip_pad + $1))
+			pskip_nop=$((pskip_nop + $2))
+			pskip_str=$((pskip_str + $3))
+		fi
+		[ -s "$work/pelig" ] || continue
+		pterms=$((pterms+1))
+		cut -d' ' -f1 "$work/pelig" | sort > "$work/pnames"
+		# The operator census, gathered once from the capabilities
+		# that are actually compared.
+		[ "$ptuples" -eq 1 ] && cut -d' ' -f2- "$work/pelig" >> "$work/pvals"
+
+		# Restricted to the eligible names with awk rather than
+		# join, which would need both sides sorted in join's own
+		# collation as well as sort's.
+		"$TERMINFO_BIN" -p "$f" $args | sed -n 's/^p //p' \
+			| sed 's/ *$//' > "$work/pgot.all"
+		awk 'NR==FNR { keep[$1]; next } ($1 in keep)' \
+			"$work/pnames" "$work/pgot.all" | sort > "$work/pgot"
+		while read -r nm _; do
+			printf '%s %s\n' "$nm" \
+			    "$(tput -T "$t" "$nm" $args 2>/dev/null \
+				| od -An -tx1 -v | tr -d ' \n')"
+		done < "$work/pelig" | sed 's/ *$//' | sort > "$work/pwant"
+
+		pnum=$((pnum + $(grep -c . < "$work/pwant")))
+		# Both directions, like every other comparison here: a
+		# capability tput evaluates and we do not report at all
+		# (a `p!` line, or no line) is a failure, not an absence.
+		if [ -n "$(comm -3 "$work/pgot" "$work/pwant")" ]; then
+			pbad=$((pbad+1))
+			if [ "$pbad" -le 3 ]; then
+				printf '  %s [%s]\n' "$t" "$args"
+				comm -3 "$work/pgot" "$work/pwant" | head -6
+			fi
+		fi
+	done
+done
+if [ "$pbad" -ne 0 ]; then
+	bad "parameterised: $pbad terminal/tuple pairs disagree with tput, $pnum compared"
+elif [ "$pnum" -le 3000 ]; then
+	bad "parameterised: only $pnum evaluations across $nterm terminals, under the 3000 floor"
+else
+	ok "parameterised strings evaluate to tput's bytes ($pnum evaluations, $pterms terminals, $ptuples parameter tuples)"
+fi
+[ "$ptuples" -eq 6 ] && ok "parameterised: all 6 parameter tuples ran" \
+	|| bad "parameterised: $ptuples parameter tuples ran, expected 6"
+printf 'note: not compared against tput: %d padded ($<>), %d string-parameter (%%s/%%l), %d termcap-style (no %%p)\n' \
+	"$pskip_pad" "$pskip_str" "$pskip_nop"
+
+# The operator census. A sweep over a corpus can agree with tput about
+# 2000 evaluations having exercised three opcodes, so the question is not
+# how many comparisons ran but which of the language's operators any of
+# them reached. Counted from infocmp's text for the capabilities that were
+# actually compared, and the ones nobody reached are named out loud.
+pseen=0
+punseen=
+for op in '%?' '%t' '%e' '%;' '%i' '%p' '%d' '%c' '%{' "%'" '%+' '%-' '%*' \
+	  '%/' '%m' '%<' '%=' '%>' '%&' '%|' '%^' '%!' '%~' '%A' '%O' '%P' '%g'; do
+	# grep -c prints the count AND exits 1 when it is zero, so there is
+	# no `|| echo 0` here: that would make the result two lines.
+	if [ "$(grep -cF -- "$op" "$work/pvals")" -gt 0 ]; then
+		pseen=$((pseen+1))
+	else
+		punseen="$punseen $op"
+	fi
+done
+# Width and precision are a separate question from the conversion letter:
+# %d is everywhere and %4.4X is in exactly one capability.
+pwidth=$(grep -cE '%:?[-+# ]*[0-9]+(\.[0-9]+)?[doxX]' "$work/pvals" || true)
+[ "$pseen" -ge 15 ] \
+	&& ok "parameterised: $pseen of the language's operators are exercised by the compared set" \
+	|| bad "parameterised: only $pseen operators exercised, under the 15 floor"
+[ "$pwidth" -gt 0 ] \
+	&& ok "parameterised: $pwidth compared capabilities use a width or precision, not a bare %d" \
+	|| bad "parameterised: no compared capability uses a width or precision"
+# The conditional earns its own assertion. Branch skipping is where this
+# evaluator was wrong: %{3} inside a skipped else-branch was stepped over
+# by one byte too many, so everything after it was swallowed, and the only
+# reason that showed was tput printing three bytes we did not.
+pcond=$(grep -cF -- '%t' "$work/pvals" || true)
+[ "$pcond" -gt 0 ] \
+	&& ok "parameterised: $pcond compared capabilities branch (%? %t %e %;)" \
+	|| bad "parameterised: no compared capability has a conditional, so branch skipping is untested"
+[ -n "$punseen" ] \
+	&& printf 'note: no capability under %s reaches%s;\n      the tic-compiled probe below is what covers them\n' \
+		"$TIDIR" "$punseen"
+
+# ------------------------------------------------- the operators nothing uses
+#
+# The census above names the operators no entry under /usr/share/terminfo
+# reaches. Leaving it at the note would mean nine opcodes written from
+# terminfo(5) and never run, in an evaluator whose one real bug so far was
+# in a path the corpus barely touched.
+#
+# So the corpus is extended with an entry that uses them, and the entry is
+# not hand-compiled: `tic` turns the source into the binary format, and
+# `tput` evaluates it, exactly as for every real terminal. What is written
+# here is the PROGRAM, which is the same thing the terminfo source of any
+# real entry is. The ANSWER still comes from ncurses. tic's own
+# normalisation shows in the result -- it rewrites %{70} as %'F' -- which
+# is a reminder that the bytes compared are not the bytes typed.
+#
+# Nothing is written outside this repo: tic is given an output directory
+# under t/tmp and tput is pointed at it with $TERMINFO.
+probe=$work/probe
+mkdir -p "$probe"
+cat > "$work/probe.src" <<'PROBE_EOF'
+zzprobe|terminfo suite probe for operators no real entry uses,
+	u0=%?%p1%{1}%=%t%'A'%c%e%'B'%c%;,
+	u1=%p1%p2%A%d.%p1%p2%O%d,
+	u2=%p1%!%d.%p1%~%d,
+	u3=%p1%p2%&%d.%p1%p2%^%d.%p1%p2%m%d,
+	u4=%p1%Pa%ga%ga%+%d.%p2%PZ%gZ%d,
+	u5=%{3}%{0}%/%d.%{3}%{0}%m%d,
+	u7=%?%p1%t%{7}%e%{70}%;%?%p2%t%{9}%e%{8}%;%+%d,
+	u9=[%p1%:-6d][%p2%4.4X],
+PROBE_EOF
+probe_caps='u0 u1 u2 u3 u4 u5 u7 u9'
+# Every operator the corpus never reached has to be in the probe, or the
+# note above quietly becomes a list of things still unproven. Checked
+# against the probe source rather than asserted in prose.
+for op in $punseen; do
+	[ "$(grep -cF -- "$op" "$work/probe.src")" -gt 0 ] \
+		|| bad "the probe entry does not use $op, which no real entry uses either"
+done
+if ! tic -x -o "$probe" "$work/probe.src" 2>"$work/probe.err"; then
+	bad "tic refused the probe entry: $(head -1 "$work/probe.err")"
+elif [ ! -f "$probe/z/zzprobe" ]; then
+	bad "tic wrote no entry for the probe"
+else
+	qnum=0
+	qbad=0
+	for args in '1 2' '0 0' '5 3' '255 16'; do
+		"$TERMINFO_BIN" -p "$probe/z/zzprobe" $args \
+			| sed -n 's/^p //p' | sed 's/ *$//' | sort > "$work/qgot.all"
+		printf '%s\n' $probe_caps | sort > "$work/qnames"
+		awk 'NR==FNR { keep[$1]; next } ($1 in keep)' \
+			"$work/qnames" "$work/qgot.all" | sort > "$work/qgot"
+		for cap in $probe_caps; do
+			printf '%s %s\n' "$cap" \
+			    "$(TERMINFO=$probe tput -T zzprobe "$cap" $args \
+				2>/dev/null | od -An -tx1 -v | tr -d ' \n')"
+		done | sed 's/ *$//' | sort > "$work/qwant"
+		qnum=$((qnum + $(grep -c . < "$work/qwant")))
+		if [ -n "$(comm -3 "$work/qgot" "$work/qwant")" ]; then
+			qbad=$((qbad+1))
+			[ "$qbad" -le 2 ] && comm -3 "$work/qgot" "$work/qwant"
+		fi
+	done
+	if [ "$qbad" -ne 0 ]; then
+		bad "probe: $qbad parameter tuples disagree with tput, $qnum compared"
+	elif [ "$qnum" -lt 28 ]; then
+		bad "probe: only $qnum evaluations, so some capability of the probe was not compared"
+	else
+		ok "the operators no real entry uses evaluate to tput's bytes too ($qnum evaluations on a tic-compiled probe)"
+	fi
+fi
 
 printf '\n--- 07 malformed files, so the bounds checks are watched to fail\n'
 # PLAN item 07. Everything above establishes that correct files are read

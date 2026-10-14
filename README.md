@@ -19,8 +19,13 @@ extitems 175
 exttable 1107
 name xterm|xterm terminal emulator (X Window System)
 
+$ ./terminfo -p /usr/share/terminfo/x/xterm 3 4 | head -3
+p csr 1b5b343b3572
+p hpa 1b5b3447
+p cup 1b5b343b3548
+
 $ make test
-34 passed, 0 failed
+40 passed, 0 failed
 ```
 
 ## The part a reader cannot get from the file
@@ -63,13 +68,16 @@ strings: 6 are defined as the EMPTY string, which is not the same as absent
 cancelled capabilities are infocmp's (9 across 44 terminals)
 cancelled: 9 exist, so -2 is distinguished from -1 on real data
 extended capabilities are infocmp -x's (734 across 29 of 44 terminals)
+parameterised strings evaluate to tput's bytes (3834 evaluations, 43 terminals, 6 parameter tuples)
+the operators no real entry uses evaluate to tput's bytes too (32 evaluations on a tic-compiled probe)
 ```
 
-Every capability value the harness compares comes from `infocmp`, in both
-directions, not from a number anybody worked out by hand. The five
-floors are the exception and are hand-written on purpose: at least 30
-terminals, 200 booleans, 100 numbers, 4000 strings, 400 extended
-capabilities, and they exist so that a corpus too thin to prove anything
+Every capability value the harness compares comes from `infocmp`, except
+the evaluated ones, which come from `tput`. Both directions, never from a
+number anybody worked out by hand. The floors are the exception and are
+hand-written on purpose: at least 30 terminals, 200 booleans, 100 numbers,
+4000 strings, 400 extended capabilities, 3000 evaluations and 15 operators
+reached, and they exist so that a corpus too thin to prove anything
 cannot pass. They are reported as a thin
 corpus, not as a disagreement, because the combined form used to print
 "booleans: 0 terminals disagree with infocmp, 191 compared" as a failure.
@@ -224,12 +232,124 @@ Nothing in this corpus cancels an extended capability, so the `xb@`, `xn@`
 and `xs@` paths are written from the format and unproven. The suite says so
 on every run rather than passing in silence.
 
+## Parameterised strings, and the one oracle that is not infocmp
+
+A capability like `cup` is not a string, it is a program:
+`\E[%i%p1%d;%p2%dH`. Everything above establishes that this reader stores
+the program correctly, byte for byte. None of it would notice a reader
+that stored the bytes and understood none of them, because `infocmp`
+prints the program, not what the program does.
+
+`tput -T TERM cap args` is ncurses running the same program, so that is
+the authority for section 06. `terminfo -p FILE ARG...` evaluates every
+string capability holding a `%` and prints the result as hex, and 3834
+evaluations across 43 terminals agree with `tput` byte for byte: 639
+distinct terminal and capability pairs at six parameter tuples each.
+
+The tuples are not arbitrary, and that is the part worth copying. The
+conditionals in this corpus compare against the constants 1, 3, 4, 6, 7, 8
+and 16, so the first parameter takes the values 0, 1, 7, 8, 16 and 200:
+one on each side of every boundary and one exactly on it. With a first
+parameter of 1 and 9 only, turning `%<` into `%<=` changes no answer in the
+whole corpus, and the mutation survives having broken the decoder.
+
+The count is also not the assertion. A sweep can agree about four thousand
+evaluations having exercised three opcodes, so the suite counts which of
+the language's operators the compared capabilities actually reach (18 of
+them), requires a width or precision somewhere rather than only bare `%d`,
+and requires that something branches, which is where the one real bug was.
+
+### What tput found
+
+The branch skipper was wrong. `%{3}` inside a skipped else-branch was
+stepped over by one byte too many, so the scan never found the closing
+`%;`, and everything after the conditional was dropped. One capability on
+one terminal showed it, `xm` on `screen.xterm-256color`, and only for the
+parameter tuples that take the then-arm. Nothing in the five sections
+above could have seen it: the stored bytes were always right.
+
+`%c` of zero emits 0200, not NUL. ncurses cannot put a NUL in the string
+it is building, so it substitutes the high bit, and `tput -T ansi rep 0 0`
+starts with the byte 0x80. That is not in terminfo(5); tput is simply what
+it is.
+
+### The operators nothing on this machine uses
+
+Nine of them: `%m %& %^ %! %~ %A %O %P %g`. No entry under
+`/usr/share/terminfo` reaches any of them, so leaving the matter at a note
+would mean nine opcodes written from the document and never run.
+
+Instead `tic` compiles a probe entry that uses them, into `t/tmp`, and
+`tput` evaluates it with `$TERMINFO` pointed there. What is written here
+is the program, which is the same thing the terminfo source of any real
+entry is; the answer still comes from ncurses. tic's own normalisation
+shows in the result, since it rewrites `%{70}` as `%'F'`, which is a
+reminder that the bytes compared are not the bytes typed.
+
+A check ties the two halves together: every operator the corpus misses
+must appear in the probe source, or the suite fails rather than printing a
+longer list of unproven things.
+
+### Three classes are not compared, and each one is counted
+
+Printed on every run, so the set that is not compared cannot grow in
+silence:
+
+- 7 padded capabilities (`$<5>`). `tput` is `tparm` plus `tputs`, and
+  `tputs` is what strips the padding spec and decides from the baud rate
+  how many pad characters to emit. Comparing a padded capability would be
+  comparing this evaluator against something else.
+- 14 with a string-valued parameter (`%s`, `%l`), all of them `Cs` and
+  `Ms`. `-p` takes numbers, and these are refused rather than given an
+  invented argument.
+- 44 termcap-style (`u6`, `u8`), which use `%d` with nothing pushed.
+  ncurses has a rule for that. It is not in terminfo(5), and guessing it
+  would be writing the oracle's answer down rather than asking for it.
+
+### One mutation survives, and it is equivalent
+
+Stepping over `%'c'` by two bytes instead of four, in the branch skipper.
+It lands on the quoted character itself, and `tp_skip` reacts to nothing
+but a `%`: if the quoted character is not `%` the scan walks it and the
+closing quote and arrives at the same place, and if it is `%` the pair
+re-enters the same case and arrives at the same place. The two spellings
+cannot differ on any input, so this one is recorded rather than fixed.
+The other 23 mutations of the evaluator and 4 of the harness are all
+caught. Two of them are worth naming: `%<` as `%<=` fails on 10 of the
+3834 comparisons and `%>` as `%>=` on 2, which is the entire return on
+choosing the parameter values deliberately.
+
 ## What does not work
 
-Parameterised strings are not evaluated. A capability like `cup` is a
-small stack program; `tput cup 3 4` is the external authority for what it
-evaluates to, and nothing here calls it yet. That is item 06 of `PLAN.md`,
-and the only one here whose oracle is not `infocmp`.
+Every item of `PLAN.md` is ticked, which is not the same as finished. What
+is missing now is smaller and more specific than what was missing before.
+
+`%s` and `%l` are refused. Both need a string-valued parameter and `-p`
+takes numbers only, so the 14 capabilities that use them here, all `Cs`
+and `Ms`, are never evaluated. The refusal is explicit, not a wrong
+answer.
+
+The termcap-style capabilities are refused the same way. `u6` and `u8`
+use `%d` with nothing pushed; ncurses has a rule for what that pops and
+terminfo(5) does not state it, so popping an empty stack is an error here
+rather than a guess. 44 of them in this corpus.
+
+There is no `tputs`, so padding is not processed. `-p` emits a `$<5>` as
+the five literal bytes it is, which is what `tparm` does and what the
+terminfo source says, but nothing external confirms it: the seven padded
+capabilities are excluded from the tput comparison precisely because tput
+would have stripped them.
+
+`%c` of a value whose low eight bits are zero but which is not itself zero
+emits a NUL, because only an exactly-zero value becomes 0200. That is
+ncurses' behaviour read from its output, but no parameter tuple here
+produces such a value, so it is unproven.
+
+Nothing in this corpus cancels an extended capability, so `xb@`, `xn@` and
+`xs@` remain written from the format. The suite says so on every run.
+
+No writing of terminfo files, no terminal setup, no `TERM` resolution
+beyond a filename on the command line. `tic` and ncurses exist.
 
 ## Malformed files
 
@@ -271,9 +391,6 @@ that assertion red; removing the cursor's bounds check turns two more red.
 tried on purpose and the cursor had never been watched to fail. Item 07 is
 what the whole section describes. The paragraph was left behind by the
 commit that did the work, and it contradicted the four paragraphs above it.)
-
-No writing of terminfo files, no terminal setup, no `TERM` resolution, no
-`tputs`. `tic` and ncurses exist.
 
 ## License
 
