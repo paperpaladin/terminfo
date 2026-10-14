@@ -301,6 +301,141 @@ count_ok(cursor *c, int v, int limit, const char *what)
 	return 1;
 }
 
+/* ------------------------------------------- the ncurses extended section
+ *
+ * term(5)'s original format stops at the string table. ncurses appends a
+ * section after it, relying on other implementations reading only as far as
+ * the header's sizes say; term(5) on this machine documents the result under
+ * "Extended Storage Format". It holds the user-defined capabilities (AX, XT,
+ * Smulx, setrgbf) and, since nothing else can know them, their NAMES.
+ *
+ * Five 16-bit counts: extended booleans, extended numbers, extended strings,
+ * the number of items stored in the extended string table, and the table's
+ * size in bytes. Then the booleans one byte each, a pad to an even boundary,
+ * the numbers at the same width as the main number array, then one 16-bit
+ * offset per extended string value followed by one per NAME (booleans first,
+ * then numbers, then strings), then the table.
+ *
+ * The name offsets are the trap in this layout. They are not offsets into
+ * the table: they are offsets from the END of the string values, so reading
+ * them the obvious way yields a name sliced out of the middle of some value.
+ * Decoding xterm that way gave "\033[?2004l" as the name of a boolean. The
+ * base is the total length of the values that are present, and the proof it
+ * is right is external: the names this produces are exactly the ones
+ * `infocmp -x` prints, across every entry on this machine that has the
+ * section.
+ *
+ * The fourth count is of items actually STORED, so an absent value is not
+ * one. screen.xterm-256color is the single entry here where that shows: 78
+ * extended strings, one of them absent, and the field says 158 rather than
+ * the 159 offsets that follow it. A reader taking that count as the length
+ * of the offset array reads the whole array one short out of position.
+ */
+
+/* A NUL-terminated string at off in the extended string table. NULL if the
+ * offset is outside the table or the string is not terminated inside it,
+ * both of which are malformed rather than empty. */
+static const char *
+etab_at(const entry *e, size_t off, size_t *len)
+{
+	const void *nul;
+
+	*len = 0;
+	if (off >= (size_t) e->esz)
+		return NULL;
+	nul = memchr(e->etab + off, 0, (size_t) e->esz - off);
+	if (!nul)
+		return NULL;
+	*len = (size_t) ((const char *) nul - (e->etab + off));
+	return e->etab + off;
+}
+
+static int
+ti_parse_ext(entry *e, cursor *c)
+{
+	const unsigned char *h;
+	int i, nname, noffs;
+	size_t base = 0;
+
+	/*
+	 * A file that ends at the string table has no extended section, and
+	 * that is the normal case rather than a truncation: 15 of the 44
+	 * entries here stop there. The pad is counted before the test, or a
+	 * string table of odd length would look like one byte of a section
+	 * that is not present.
+	 */
+	if (c->at + (c->at & 1u) >= c->len)
+		return 1;
+	align_even(c);
+	h = take(c, 10);
+	if (!h)
+		return 0;
+
+	e->has_ext = 1;
+	e->eb = le16(h);
+	e->en = le16(h + 2);
+	e->es = le16(h + 4);
+	e->eitems = le16(h + 6);
+	e->esz = le16(h + 8);
+	if (!count_ok(c, e->eb, MAX_SECTION, "extended boolean") ||
+	    !count_ok(c, e->en, MAX_SECTION, "extended number") ||
+	    !count_ok(c, e->es, MAX_SECTION, "extended string") ||
+	    !count_ok(c, e->eitems, 4 * MAX_SECTION, "extended item") ||
+	    !count_ok(c, e->esz, MAX_STRTAB, "extended string table"))
+		return 0;
+
+	nname = e->eb + e->en + e->es;
+	noffs = nname + e->es;
+	e->ebools = take(c, (size_t) e->eb);
+	align_even(c);
+	e->enums = take(c, (size_t) e->en * (size_t) e->numsize);
+	e->eoffs = take(c, (size_t) noffs * 2);
+	e->etab = (const char *) take(c, (size_t) e->esz);
+	if (c->bad)
+		return 0;
+
+	/* Walk the values first: they are checked for the same reasons the
+	 * main offset array is, and the walk is what produces the base the
+	 * names are measured from. */
+	for (i = 0; i < e->es; i++) {
+		int off = le16(e->eoffs + (size_t) i * 2);
+		size_t n;
+
+		if (off == TI_ABSENT || off == TI_CANCELLED)
+			continue;
+		if (off < 0 || !etab_at(e, (size_t) off, &n)) {
+			char msg[128];
+
+			snprintf(msg, sizeof msg, "extended string %d has "
+				 "offset %d, outside a %d-byte extended string "
+				 "table or unterminated in it", i, off,
+				 e->esz);
+			fail(c, msg);
+			return 0;
+		}
+		base += n + 1;
+	}
+	e->ebase = (int) base;
+
+	for (i = 0; i < nname; i++) {
+		int off = le16(e->eoffs + ((size_t) e->es + (size_t) i) * 2);
+		size_t n;
+
+		if (off < 0 || !etab_at(e, base + (size_t) off, &n)) {
+			char msg[128];
+
+			snprintf(msg, sizeof msg, "extended capability name "
+				 "%d has offset %d from base %d, outside a "
+				 "%d-byte extended string table or "
+				 "unterminated in it", i, off, e->ebase,
+				 e->esz);
+			fail(c, msg);
+			return 0;
+		}
+	}
+	return 1;
+}
+
 /*
  * Parse the header and locate every section. The counts are read before any
  * of them is used, so a count that cannot be right is refused here rather
@@ -419,6 +554,8 @@ ti_parse(entry *e, const char *path)
 		}
 	}
 
+	ti_parse_ext(e, &c);
+
 out:
 	if (c.bad) {
 		free(e->raw);
@@ -509,6 +646,23 @@ ti_str(const entry *e, int i, size_t *len)
 	return p;
 }
 
+/* The name of extended capability i, counting booleans, then numbers, then
+ * strings. Never NULL: ti_parse_ext refused the file if any name offset was
+ * out of range, so by here every one of them resolves. */
+static const char *
+ext_name(const entry *e, int i)
+{
+	const char *p;
+	size_t n;
+	int off;
+
+	if (i < 0 || i >= e->eb + e->en + e->es)
+		return "";
+	off = le16(e->eoffs + ((size_t) e->es + (size_t) i) * 2);
+	p = etab_at(e, (size_t) e->ebase + (size_t) off, &n);
+	return p ? p : "";
+}
+
 /* ------------------------------------------------------------------ output */
 
 /* Emitted as HEX rather than in terminfo's own escape notation.
@@ -593,6 +747,73 @@ dump_bools(const entry *e)
 	}
 }
 
+/*
+ * The extended capabilities, on their own prefixes.
+ *
+ * They could be emitted as plain b/n/s lines, since infocmp -x prints them
+ * in the same syntax as the predefined ones and the harness would compare
+ * them without being told. Keeping them apart is what lets the harness ask
+ * the sharper question: the set we label extended must be exactly the set
+ * `infocmp -x` reports and plain `infocmp` does not. Merged in, a reader
+ * that found no extended section at all would still have to be caught by
+ * absence, and absence is the direction that has already gone wrong here
+ * twice.
+ *
+ * The three sentinel conventions are the main sections': 0 and 2 for a
+ * boolean, -1 and -2 for a number or a string offset. No entry in this
+ * machine's corpus uses any of them except an absent string (one, in
+ * screen.xterm-256color), so those branches are written from the format
+ * rather than confirmed by the oracle, and the suite says so out loud.
+ */
+static void
+dump_ext(const entry *e)
+{
+	int i;
+
+	if (!e->has_ext)
+		return;
+	for (i = 0; i < e->eb; i++) {
+		int v = e->ebools[i];
+
+		if (v == 0)
+			continue;
+		printf("%s %s\n", v == 2 ? "xb@" : "xb", ext_name(e, i));
+	}
+	for (i = 0; i < e->en; i++) {
+		const char *nm = ext_name(e, e->eb + i);
+		long v = e->numsize == 4
+			? le32(e->enums + (size_t) i * 4)
+			: le16(e->enums + (size_t) i * 2);
+
+		if (v == TI_ABSENT)
+			continue;
+		if (v == TI_CANCELLED)
+			printf("xn@ %s\n", nm);
+		else
+			printf("xn %s %ld\n", nm, v);
+	}
+	for (i = 0; i < e->es; i++) {
+		const char *nm = ext_name(e, e->eb + e->en + i);
+		int off = le16(e->eoffs + (size_t) i * 2);
+		const char *v;
+		size_t n, k;
+
+		if (off == TI_ABSENT)
+			continue;
+		if (off == TI_CANCELLED) {
+			printf("xs@ %s\n", nm);
+			continue;
+		}
+		v = etab_at(e, (size_t) off, &n);
+		if (!v)
+			continue;	/* refused at parse time */
+		printf("xs %s ", nm);
+		for (k = 0; k < n; k++)
+			printf("%02x", (unsigned char) v[k]);
+		putchar('\n');
+	}
+}
+
 static int
 mode_dump(const entry *e)
 {
@@ -600,6 +821,7 @@ mode_dump(const entry *e)
 	dump_bools(e);
 	dump_nums(e);
 	dump_strs(e);
+	dump_ext(e);
 	return 0;
 }
 
@@ -614,6 +836,11 @@ mode_info(const entry *e)
 	printf("nums %d\n", e->nnum);
 	printf("strs %d\n", e->nstr);
 	printf("strtable %d\n", e->strsz);
+	printf("extbools %d\n", e->eb);
+	printf("extnums %d\n", e->en);
+	printf("extstrs %d\n", e->es);
+	printf("extitems %d\n", e->eitems);
+	printf("exttable %d\n", e->esz);
 	printf("name %s\n", e->names);
 	return 0;
 }

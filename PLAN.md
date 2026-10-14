@@ -169,10 +169,57 @@ should be, it does not get reported as if we knew.
             size accepted, not refused, and strlen instead of a
             bounded memchr. Untested machinery, not untested
             behaviour; item 07 is deliberately trying malformed files.
-- [ ] 05 the ncurses extended-capability section
+- [x] 05 the ncurses extended-capability section
       why: it is where user-defined capabilities such as `Smulx` and
            `setrgbf` live, it is the part `term(5)` does not document, and
            `infocmp -x` is the oracle that knows what is in it.
+      files: terminfo.c (ti_parse_ext, etab_at, ext_name, dump_ext),
+            t/run.sh (the three comparisons switched to infocmp -x, a
+            section for the predefined/extended split, six more malformed
+            cases), README.md.
+      proves: 734 extended capabilities across 29 of the 44 terminals are
+            exactly the set `infocmp -x` reports and `term.h` does not
+            define, and their values are compared with everything else:
+            booleans 294 -> 344, numbers 202 -> 211, strings 4584 -> 5259.
+            The header's extended counts are non-empty for exactly the 29
+            terminals the oracle adds capabilities to, so a reader that
+            located the section one byte out could not agree with it about
+            the 15 entries that have none.
+      done: the trap is the NAME offsets. They are measured from the end of
+            the extended string values, not from the start of the table, so
+            the obvious reading returns a name cut out of the middle of a
+            value: xterm decoded that way has a boolean called
+            `\033[?2004l`. The base is the summed length of the values that
+            are present, and nothing in the file states it.
+      found: the fourth extended count is of items STORED, so an absent
+            value is not counted, and the offset array is longer than it by
+            one. screen.xterm-256color is the only entry on this machine
+            where the two differ (158 against 159), and a reader trusting
+            that count reads the whole array one short out of position.
+      found: THE BOOLEAN COMPARISON WAS COVERING FOR ITSELF. Its missing
+            direction was filtered through the list of predefined BOOLEAN
+            names, ostensibly so the unread extended capabilities were not
+            demanded of it. That filter was also swallowing cancelled
+            NUMBERS and STRINGS, which infocmp spells `name@` with no class
+            attached, and which `want` therefore carried. Deleting the
+            filter (item 05 removed its reason to exist) turned Eterm red on
+            `ncv@` and `kNXT@`. Cancellation now belongs to the
+            kind-agnostic section alone, on both sides.
+      found: the README claimed malformed files had never been tried on
+            purpose, in the paragraph after four describing item 07 doing
+            exactly that, and counted 41 compiled entries where there are
+            44.
+      mutations: seven planted, all seven caught. Name offsets read as table
+            offsets; the offset array length taken from the header's item
+            count; the even-byte pad dropped before the extended header and
+            again between the extended booleans and numbers; extended
+            booleans not reported; the base off by one per value; an absent
+            value counted into the base. The two that touch
+            screen.xterm-256color alone fail one terminal out of 44, which
+            is what the dedicated extended section is for.
+      skip: no entry under /usr/share/terminfo cancels an extended
+            capability, so the xb@/xn@/xs@ paths are written from the format
+            and unproven. The suite prints that on every run.
 - [ ] 06 parameterised strings evaluated against `tput`
       why: a string capability such as `cup` is a tiny stack program, and
            `tput cup 3 4` is an external authority for what it evaluates

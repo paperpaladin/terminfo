@@ -92,13 +92,20 @@ done
 # `infocmp -x -1` prints one capability per line; a bare name is a boolean
 # that is present. `name@` is a capability cancelled in the source, and
 # infocmp spells that the same way whether the capability is a boolean, a
-# number or a string -- so cancellations are compared as a kind-agnostic set
-# later, once numbers and strings exist, rather than guessed at here.
+# number or a string, so neither side of this comparison carries a
+# cancellation: they are compared as one kind-agnostic set further down.
 #
-# At this commit the predefined booleans are a strict subset of infocmp's
-# list, because the extended section (which holds AX, XT, U8 and friends) is
-# not read yet. Subset still bites: a wrong name or a shifted index drops
-# straight out of it.
+# Both sides were cancellation-blind by accident until item 05. `want` took
+# the `name@` lines and `got` took our `b@` ones, and the missing direction
+# was then filtered through the list of predefined BOOLEAN names, which
+# silently dropped the cancelled numbers and strings infocmp had put in
+# `want`. Deleting the filter (the extended section is read now, so it had
+# no reason left to exist) made Eterm fail on `ncv@` and `kNXT@`: a cancelled
+# number and a cancelled string, demanded of the boolean set. The filter had
+# been covering for that since the booleans were written.
+#
+# Both sides are now the whole of `infocmp -x`, including the extended
+# booleans AX, XT and U8.
 # The predefined capability names, from /usr/include/term.h, via the same
 # parser t/derive-caps.py uses. These are what separates a capability this
 # reader is supposed to know from an ncurses *extended* one (PLAN item 05,
@@ -117,14 +124,20 @@ sed -n '/bool_names\[/,/};/p' "$work/caps.c" \
 	| grep -o '"[^"]*"' | tr -d '"' | sort > "$work/predef_b"
 sed -n '/num_names\[/,/};/p' "$work/caps.c" \
 	| grep -o '"[^"]*"' | tr -d '"' | sort > "$work/predef_n"
+sed -n '/str_names\[/,/};/p' "$work/caps.c" \
+	| grep -o '"[^"]*"' | tr -d '"' | sort > "$work/predef_s"
+# All three classes in one set. This is what separates a PREDEFINED
+# capability from an ncurses extended one, and the extended section below
+# needs the distinction without caring which class a name belongs to.
+sort -u "$work/predef_b" "$work/predef_n" "$work/predef_s" > "$work/predef"
 [ "$(grep -c . < "$work/predef_b")" -eq 44 ] || bad "term.h gave $(grep -c . < "$work/predef_b") boolean names, expected 44"
 
 nbool=0
 nbad=0
 for f in $corpus; do
 	t=${f##*/}
-	infocmp -x -1 "$t" 2>/dev/null 		| sed -n 's/^	\([a-zA-Z0-9_]*\)\(@\{0,1\}\),$/\1\2/p' 		| sort > "$work/want"
-	"$TERMINFO_BIN" -d "$f" 		| sed -n 's/^b \(.*\)$/\1/p;s/^b@ \(.*\)$/\1@/p' 		| sort > "$work/got"
+	infocmp -x -1 "$t" 2>/dev/null 		| sed -n 's/^	\([a-zA-Z0-9_]*\),$/\1/p' 		| sort > "$work/want"
+	"$TERMINFO_BIN" -d "$f" 		| sed -n 's/^b \(.*\)$/\1/p;s/^xb \(.*\)$/\1/p' 		| sort > "$work/got"
 	# Both directions. `comm -13` alone reports only what WE have and
 	# infocmp does not -- so a decoder that stopped early and simply failed
 	# to report capabilities passed. Truncating dump_bools to the first 37
@@ -133,19 +146,15 @@ for f in $corpus; do
 	# the 'standard' count gets the array length wrong"). The strings and
 	# cancelled sections were already two-way; these two were not.
 	#
-	# The missing-from-ours direction uses `infocmp -1` without -x, in
-	# "$work/want_std": with -x, want carries the ncurses extended
-	# capabilities, which this reader does not implement by design (PLAN
-	# item 05). OT* names are dropped as infocmp's own obsolete aliases.
-	# Measured over the corpus: zero terminals, zero names.
+	#
+	# The missing-from-ours direction used to be filtered down to
+	# predefined names, because the extended section was unread and every
+	# AX that infocmp reported was a documented gap rather than a defect.
+	# Item 05 closed the gap, so the filter went with it: an extended
+	# boolean infocmp reports and this reader does not is now a failure
+	# like any other.
 	extra=$(comm -13 "$work/want" "$work/got")
-	# `missing` is restricted to predefined names: an extended capability
-	# infocmp -x reports and this reader does not is the documented gap,
-	# not a defect. OT* names ARE predefined -- they sit at indices 37-43,
-	# which is exactly where a truncated walk loses them, so filtering
-	# them out (as a first attempt did) hid the bug this check exists for.
-	missing=$(comm -23 "$work/want" "$work/got" | sed 's/@$//' \
-		| sort -u | comm -12 - "$work/predef_b")
+	missing=$(comm -23 "$work/want" "$work/got")
 	if [ -z "$extra" ] && [ -z "$missing" ]; then
 		nbool=$((nbool + $(grep -c . < "$work/got")))
 	else
@@ -167,7 +176,7 @@ elif [ "$nbool" -le 200 ]; then
 	# simply too small to prove anything.
 	bad "booleans: only $nbool compared across $nterm terminals, under the 200 floor"
 else
-	ok "predefined booleans are infocmp's ($nbool across $nterm terminals)"
+	ok "booleans are infocmp's, extended ones included ($nbool across $nterm terminals)"
 fi
 
 # -------------------------------------------------- numbers against infocmp
@@ -191,7 +200,7 @@ for f in $corpus; do
 		| sed -n 's/^	\([a-zA-Z0-9_]*\)#\(.*\),$/\1 \2/p' \
 		| while read -r nm v; do printf '%s %d\n' "$nm" "$((v))"; done \
 		| sort > "$work/want"
-	"$TERMINFO_BIN" -d "$f" | sed -n 's/^n //p' | sort > "$work/got"
+	"$TERMINFO_BIN" -d "$f" | sed -n 's/^n //p;s/^xn //p' | sort > "$work/got"
 	# Values above 32767 cannot be read at all by a 16-bit decode, so
 	# they are counted separately: they are the ones that prove the
 	# extended format is being read rather than merely accepted.
@@ -199,11 +208,10 @@ for f in $corpus; do
 	# Both directions, as with the booleans above: `comm -13` alone could
 	# not see a number we failed to report, and truncating dump_nums to the
 	# first 20 took the count from 202 to 198 with the suite still green.
-	# The missing-from-ours side uses infocmp without -x, since the
-	# extended section is not implemented.
+	# No predefined-only filter on the missing side any more; see the
+	# booleans above.
 	extra=$(comm -13 "$work/want" "$work/got")
-	missing=$(comm -23 "$work/want" "$work/got" | awk '{print $1}' \
-		| sed 's/@$//' | sort -u | comm -12 - "$work/predef_n")
+	missing=$(comm -23 "$work/want" "$work/got")
 	if [ -z "$extra" ] && [ -z "$missing" ]; then
 		nnum=$((nnum + $(grep -c . < "$work/got")))
 	else
@@ -248,20 +256,21 @@ fi
 # shares nothing with the reader under test -- one parses escapes out of
 # text, the other walks an offset table in a binary file.
 #
-# No -x here: the extended section is a separate item, and asking infocmp
-# for extended capabilities would report 86 absences per terminal that are
-# not defects.
+# -x on both sides. This used to be plain `infocmp`, because asking for the
+# extended capabilities would have reported 86 absences per terminal that
+# were not defects. Item 05 reads them, so they are compared here with
+# everything else: an extended string is bytes in a table like any other.
 nstr=0
 nbad=0
 nempty=0
 for f in $corpus; do
 	t=${f##*/}
-	"$TERMINFO_BIN" -d "$f" | sed -n 's/^s //p' \
+	"$TERMINFO_BIN" -d "$f" | sed -n 's/^s //p;s/^xs //p' \
 		| python3 "$here/caps-hex.py" --normalize | sort > "$work/sgot"
 	# Drop the cancelled entries: caps-hex.py emits those as `name @` for
 	# the section below, and they are not string VALUES. Comparing them
 	# here would report every cancelled capability as a missing string.
-	infocmp -1 "$t" 2>/dev/null \
+	infocmp -x -1 "$t" 2>/dev/null \
 		| python3 "$here/caps-hex.py" | awk '$2!="@"' | sort > "$work/swant"
 	nstr=$((nstr + $(grep -c . < "$work/sgot")))
 	# A capability defined as the EMPTY string is not an absent one, and
@@ -303,9 +312,9 @@ ncancel=0
 nbad=0
 for f in $corpus; do
 	t=${f##*/}
-	"$TERMINFO_BIN" -d "$f" | sed -n 's/^[bns]@ \(.*\)/\1 @/p' \
+	"$TERMINFO_BIN" -d "$f" | sed -n 's/^x\{0,1\}[bns]@ \(.*\)/\1 @/p' \
 		| sort > "$work/cgot"
-	infocmp -1 "$t" 2>/dev/null | python3 "$here/caps-hex.py" \
+	infocmp -x -1 "$t" 2>/dev/null | python3 "$here/caps-hex.py" \
 		| awk '$2=="@"' | sort > "$work/cwant"
 	ncancel=$((ncancel + $(grep -c . < "$work/cgot")))
 	if [ -n "$(comm -3 "$work/cgot" "$work/cwant")" ]; then
@@ -322,6 +331,87 @@ done
 [ "$ncancel" -gt 0 ] \
 	&& ok "cancelled: $ncancel exist, so -2 is distinguished from -1 on real data" \
 	|| bad "no cancelled capability in the corpus, so -2 vs -1 is untested"
+
+printf '\n--- 05 the ncurses extended-capability section\n'
+# The section term(5) does not describe in its original format and `infocmp
+# -x` is the only thing that knows. Its values are already folded into the
+# three comparisons above, on the xb/xn/xs prefixes, so they are checked
+# against infocmp like every other capability. What is checked here is the
+# SPLIT: which capabilities this reader found in the extended section rather
+# than at a fixed index.
+#
+# The oracle for that is infocmp -x minus the predefined names, which come
+# from term.h through derive-caps.py. Not from `diff infocmp infocmp -x`,
+# which looks like the same thing and is not: infocmp hides the obsolete OT*
+# capabilities until -x is given, so seven predefined names appear in that
+# difference and would be demanded of the extended section.
+#
+# The name a reader has to get right here is not in the file at the offset
+# the obvious reading gives. Extended names are stored after the extended
+# string VALUES and their offsets are measured from there, so a reader that
+# treats them as table offsets reports a name cut out of the middle of some
+# value: decoding xterm that way named a boolean "\033[?2004l".
+next=0
+nextterms=0
+nbad=0
+ncollide=0
+nhdr=0
+for f in $corpus; do
+	t=${f##*/}
+	"$TERMINFO_BIN" -d "$f" \
+		| sed -n 's/^x[bns]@\{0,1\} \([^ ]*\).*$/\1/p' \
+		| sort -u > "$work/xgot"
+	infocmp -x -1 "$t" 2>/dev/null \
+		| sed -n 's/^	\([a-zA-Z0-9_]\{1,\}\)[=#@,].*$/\1/p' \
+		| sort -u | comm -23 - "$work/predef" > "$work/xwant"
+	next=$((next + $(grep -c . < "$work/xgot")))
+	[ -s "$work/xgot" ] && nextterms=$((nextterms+1))
+	# An extended name that is also a predefined one would be subtracted
+	# out of xwant above and the comparison would then demand that we do
+	# NOT report it. None exist here; if one ever did this check is what
+	# says so, rather than the oracle quietly weakening.
+	ncollide=$((ncollide + $(comm -12 "$work/xgot" "$work/predef" | grep -c . || true)))
+	# The header's own counts, against the oracle's answer to the same
+	# question: does this terminal have extended capabilities at all.
+	esum=$("$TERMINFO_BIN" -i "$f" \
+		| awk '$1=="extbools"||$1=="extnums"||$1=="extstrs"{n+=$2} END{print n+0}')
+	[ "$esum" -gt 0 ] && nhdr=$((nhdr+1))
+	if [ -n "$(comm -3 "$work/xgot" "$work/xwant")" ]; then
+		nbad=$((nbad+1))
+		[ "$nbad" -le 3 ] && comm -3 "$work/xgot" "$work/xwant" | head -6
+	fi
+done
+if [ "$nbad" -ne 0 ]; then
+	bad "extended: $nbad terminals disagree with infocmp -x, $next compared"
+elif [ "$next" -le 400 ]; then
+	bad "extended: only $next capabilities across $nterm terminals, under the 400 floor"
+else
+	ok "extended capabilities are infocmp -x's ($next across $nextterms of $nterm terminals)"
+fi
+[ "$ncollide" -eq 0 ] \
+	&& ok "no extended name is also a predefined one, so the oracle's subtraction hides nothing" \
+	|| bad "$ncollide extended names collide with predefined ones"
+# Ties the five-short extended header to the oracle. A reader that located
+# the section one byte out would still agree about the capabilities of the
+# 15 entries that have no extended section at all, and this is the number
+# that notices.
+[ "$nhdr" -eq "$nextterms" ] \
+	&& ok "the extended header is non-empty for exactly the $nhdr terminals infocmp -x adds capabilities to" \
+	|| bad "header says $nhdr terminals have an extended section, infocmp -x says $nextterms"
+
+# Loud about what this corpus cannot prove. ncurses stores the same
+# sentinels in the extended section as in the main one (0 and 2 for a
+# boolean, -1 and -2 for a number or a string offset), and nothing here
+# exercises most of them.
+nxabs=0
+for f in $corpus; do
+	es=$("$TERMINFO_BIN" -i "$f" | sed -n 's/^extstrs //p')
+	ngot=$("$TERMINFO_BIN" -d "$f" | sed -n 's/^xs@\{0,1\} .*/x/p' | grep -c . || true)
+	nxabs=$((nxabs + es - ngot))
+done
+printf 'note: %d extended string capabilities in this corpus are ABSENT (-1)\n' "$nxabs"
+printf 'note: SKIP, no cancelled extended capability exists under %s, so the\n' "$TIDIR"
+printf '      xb@/xn@/xs@ paths are written from the format and unproven here\n'
 
 printf '\n--- 07 malformed files, so the bounds checks are watched to fail\n'
 # PLAN item 07. Everything above establishes that correct files are read
@@ -417,6 +507,56 @@ case "$rc:$err" in
 *:)   bad "a string offset past the table is refused with no diagnostic" ;;
 *)    ok  "a string offset past the table is refused: ${err#terminfo: }" ;;
 esac
+
+# The extended header, sabotaged the same way. Its five counts come out of
+# the file like every other count after byte 12, and until item 05 nothing
+# read them at all. `std` is the end of the standard sections, so the
+# extended header starts at the next even byte.
+ext_off=$((std + std % 2))
+mal_hdr 'an absurd extended boolean count is refused'   $((ext_off))     30000
+mal_hdr 'an absurd extended number count is refused'    $((ext_off + 2)) 30000
+mal_hdr 'an absurd extended string count is refused'    $((ext_off + 4)) 30000
+mal_hdr 'a negative extended string count is refused'   $((ext_off + 4)) -1
+mal_hdr 'an extended string table past the file is refused' $((ext_off + 8)) 30000
+
+# An extended NAME offset pointing outside the table. This is the offset
+# that is measured from the end of the string values rather than from the
+# start of the table, so it is the one a reader is most likely to resolve
+# into whatever happens to be there instead of refusing.
+#
+# The base file is chosen for having extended strings at all: the first
+# entry in the corpus has one extended boolean and no strings, so the only
+# name offset in it is 0 and there is nothing to point past.
+mal_x=$(for f in $corpus; do
+		"$TERMINFO_BIN" -i "$f" | sed -n 's/^extstrs //p' \
+			| while read -r n; do [ "$n" -gt 4 ] && echo "$f"; done
+	done | head -1)
+if [ -z "$mal_x" ]; then
+	bad "SKIP: no entry under $TIDIR has extended strings, so the name-offset bound is untested"
+else
+	cp "$mal_x" "$mal/x.ti"
+	python3 -c 'import sys,struct
+b=bytearray(open(sys.argv[1],"rb").read())
+magic,names,bools,nums,strs,strsz=struct.unpack_from("<6h",b,0)
+ns=4 if magic==0o1036 else 2
+off=12+names+bools; off+=off&1; off+=nums*ns+strs*2+strsz; off+=off&1
+eb,en,es,eitems,esz=struct.unpack_from("<5h",b,off); off+=10
+off+=eb; off+=off&1; off+=en*ns
+# The first NAME offset sits just past the es value offsets.
+struct.pack_into("<h",b,off+2*es,int(sys.argv[3]))
+open(sys.argv[2],"wb").write(b)' "$mal/x.ti" "$mal/xn.ti" 30000
+	err=$("$TERMINFO_BIN" -d "$mal/xn.ti" 2>&1 >/dev/null); rc=$?
+	case "$rc:$err" in
+	0:*)  bad "an extended name offset past the table is accepted" ;;
+	*:)   bad "an extended name offset past the table is refused with no diagnostic" ;;
+	*)    ok  "an extended name offset past the table is refused: ${err#terminfo: }" ;;
+	esac
+	if "$TERMINFO_BIN" -d "$mal/x.ti" >/dev/null 2>&1; then
+		ok "the unmodified ${mal_x##*/} still parses, so the sabotage is what was refused"
+	else
+		bad "the unmodified ${mal_x##*/} does not parse"
+	fi
+fi
 
 # And the control: the file it was all derived from still parses.
 if "$TERMINFO_BIN" -d "$mal_base" >/dev/null 2>&1; then
