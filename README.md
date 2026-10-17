@@ -12,10 +12,15 @@ bools 38
 nums 15
 strs 413
 strtable 1552
+extbools 3
+extnums 0
+extstrs 86
+extitems 175
+exttable 1107
 name xterm|xterm terminal emulator (X Window System)
 
 $ make test
-24 passed, 0 failed
+34 passed, 0 failed
 ```
 
 ## The part a reader cannot get from the file
@@ -50,20 +55,22 @@ should be, and the answer is compared value by value:
 corpus (44 compiled terminal descriptions under /usr/share/terminfo)
 legacy format (0432) read: 39 terminals
 extended-number format (01036) read: 5 terminals
-predefined booleans are infocmp's (294 across 44 terminals)
-numbers are infocmp's (202 across all 44 terminals, 5 of them 32-bit)
+booleans are infocmp's, extended ones included (344 across 44 terminals)
+numbers are infocmp's (211 across all 44 terminals, 5 of them 32-bit)
 numbers: 5 values exceed 32767, which a 16-bit decode could not represent
-string capabilities are infocmp's, byte for byte (4584 across 44 terminals)
+string capabilities are infocmp's, byte for byte (5259 across 44 terminals)
 strings: 6 are defined as the EMPTY string, which is not the same as absent
 cancelled capabilities are infocmp's (9 across 44 terminals)
 cancelled: 9 exist, so -2 is distinguished from -1 on real data
+extended capabilities are infocmp -x's (734 across 29 of 44 terminals)
 ```
 
 Every capability value the harness compares comes from `infocmp`, in both
-directions, not from a number anybody worked out by hand. The four
+directions, not from a number anybody worked out by hand. The five
 floors are the exception and are hand-written on purpose: at least 30
-terminals, 200 booleans, 100 numbers, 4000 strings, and they exist so that
-a corpus too thin to prove anything cannot pass. They are reported as a thin
+terminals, 200 booleans, 100 numbers, 4000 strings, 400 extended
+capabilities, and they exist so that a corpus too thin to prove anything
+cannot pass. They are reported as a thin
 corpus, not as a disagreement, because the combined form used to print
 "booleans: 0 terminals disagree with infocmp, 191 compared" as a failure.
 
@@ -82,10 +89,6 @@ some value could not have been read any other way:
 
 ```
 numbers: 5 values exceed 32767, which a 16-bit decode could not represent
-string capabilities are infocmp's, byte for byte (4584 across 44 terminals)
-strings: 6 are defined as the EMPTY string, which is not the same as absent
-cancelled capabilities are infocmp's (9 across 44 terminals)
-cancelled: 9 exist, so -2 is distinguished from -1 on real data
 ```
 
 `pairs#65536` on a 256-colour terminal is the usual one. Without that
@@ -114,8 +117,8 @@ sabotage in the harness instead of being left to the value comparison.
 
 ## Strings are compared as bytes, not as notation
 
-4584 string capabilities across 44 terminals, byte for byte against
-`infocmp`. The comparison is in hex, and that is the decision worth
+5259 string capabilities across 44 terminals, byte for byte against
+`infocmp -x`. The comparison is in hex, and that is the decision worth
 explaining.
 
 A string capability is arbitrary bytes, and terminfo's source notation has
@@ -182,15 +185,46 @@ It now refuses to run when `terminfo.c` is newer than the binary, and exits
 non-zero saying so. A suite that cannot tell which code it ran is not a
 suite.
 
-## What does not work
+## The ncurses extended section, and the offset that is not an offset
 
-The ncurses extended-capability section is not read. It is where
-user-defined capabilities such as `Smulx` and `setrgbf` live, and where
-`term(5)` stops documenting. `xterm` here has 183 predefined string
-capabilities and `infocmp -x` reports 269, so roughly a third of what the
-file holds is still unread, so the string comparison runs
-`infocmp` *without* `-x`: asking for extended capabilities would report 86
-absences per terminal that are not defects.
+After the string table, ncurses appends a section the original `term(5)`
+format knows nothing about, relying on other implementations reading only
+as far as the header's sizes say. It holds the user-defined capabilities,
+`AX`, `XT`, `U8`, `Smulx`, `setrgbf`, and, since nothing else can know them,
+their names. 29 of the 44 entries here have one, and `xterm` keeps 89 of its
+capabilities in it.
+
+Five 16-bit counts, then the booleans, a pad to an even boundary, the
+numbers, then one offset per extended string value followed by one per name,
+then the table.
+
+The name offsets are the trap. They are not offsets into the table: they are
+offsets from the *end* of the string values, so reading them the obvious way
+yields a name sliced out of the middle of some value. Decoding `xterm` that
+way reports a boolean capability called `\033[?2004l`. The base is the total
+length of the values that are present, and the only reason to believe it is
+right is external: the names it produces are exactly the ones `infocmp -x`
+prints.
+
+The fourth count is of items actually *stored* in the extended string table,
+so an absent value is not one of them. `screen.xterm-256color` is the single
+entry here where that shows: 78 extended strings, one of them absent, and
+the count says 158 where 159 offsets follow it. A reader that takes it as
+the length of the offset array reads the whole array one short out of
+position, and that mutation fails on exactly one terminal out of 44.
+
+What the suite checks is not only the values, which are folded into the
+boolean, number and string comparisons above, but the *split*: the set of
+capabilities this reader found in the extended section must equal
+`infocmp -x` minus the predefined names from `term.h`. Not `diff infocmp
+infocmp -x`, which looks like the same question and is not, since `infocmp`
+hides the obsolete `OT*` capabilities until `-x` is given.
+
+Nothing in this corpus cancels an extended capability, so the `xb@`, `xn@`
+and `xs@` paths are written from the format and unproven. The suite says so
+on every run rather than passing in silence.
+
+## What does not work
 
 Parameterised strings are not evaluated. A capability like `cup` is a
 small stack program; `tput cup 3 4` is the external authority for what it
@@ -203,15 +237,17 @@ Item 07, and it found something. The suite truncates a real compiled entry at
 every byte through the header and the early sections, then at a stride to the
 end, in both modes: 626 runs, no signals, and every refusal carrying a
 diagnostic. Its header is sabotaged field by field, wrong magic, counts
-larger than the file, negative counts, and each is refused.
+larger than the file, negative counts, and each is refused. The extended
+header's five counts get the same treatment, and so does an extended name
+offset pointing outside its table.
 
 The assertion worth having is not "it does not crash". It is that the first
 *accepted* truncation is exactly the end of the sections this parser reads,
 computed from the header, not written down: 12-byte header, names,
 booleans, pad to even, two bytes per number and per string offset, then the
 string table. A truncation before that is a file that must be refused. After
-it lies the ncurses extended section, which this does not read and whose
-absence is not an error. One number pins both directions.
+it lies the ncurses extended section, whose absence is not an error: 15 of
+the 44 entries here stop at that byte. One number pins both directions.
 
 What it found: **a string offset pointing outside the string table was
 accepted in silence.** `ti_str` refused the offset and returned `NULL`,
@@ -228,12 +264,13 @@ not at a later read that happens to cope:
 terminfo: string 0 has offset 30000, outside a 580-byte string table
 ```
 
-All 41 compiled entries on this machine still parse. Removing the check turns
+All 44 compiled entries on this machine still parse. Removing the check turns
 that assertion red; removing the cursor's bounds check turns two more red.
 
-Malformed files have never been tried on purpose. The cursor bounds-checks
-every read and its error flag is sticky, and that code has never been watched
-to fail. Until item 07 it is untested machinery.
+(Two sentences used to follow this one saying malformed files had never been
+tried on purpose and the cursor had never been watched to fail. Item 07 is
+what the whole section describes. The paragraph was left behind by the
+commit that did the work, and it contradicted the four paragraphs above it.)
 
 No writing of terminfo files, no terminal setup, no `TERM` resolution, no
 `tputs`. `tic` and ncurses exist.
