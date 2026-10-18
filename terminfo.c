@@ -663,6 +663,326 @@ ext_name(const entry *e, int i)
 	return p ? p : "";
 }
 
+/* ------------------------------------------- parameterised strings (tparm)
+ *
+ * A string capability such as cup is a program for a tiny stack machine:
+ * `\E[%i%p1%d;%p2%dH`. terminfo(5) calls these Parameterized Strings, and
+ * the authority for what one evaluates to is `tput`, the only oracle in
+ * this repository that is not infocmp.
+ *
+ * This is a reimplementation, not a binding: no tparm, no libtinfo. Three
+ * of its rules are not things anybody would guess from the grammar, and
+ * each of them is here because tput disagreed first.
+ *
+ * - `%c` of zero emits 0200, not NUL. ncurses cannot put a NUL in a C
+ *   string, so it substitutes the high bit. `tput -T ansi rep 0 0` starts
+ *   with the byte 0x80.
+ * - `-` is subtraction, never a printf flag. `%:-d` is how the flag is
+ *   spelled, which is the whole reason the `:` exists.
+ * - a popped value of zero as a divisor yields zero rather than a trap.
+ *
+ * Two things are deliberately refused rather than guessed: `%s` and `%l`
+ * need a string-valued parameter, and this evaluator only takes numbers;
+ * and popping an empty stack is an error, which is how the termcap-style
+ * capabilities that use `%d` with no `%p` at all (u6, u8) are kept out
+ * instead of being decoded by a rule invented here. t/run.sh excludes the
+ * same set from the comparison, using infocmp's text rather than this
+ * code's opinion, and prints how many it excluded.
+ */
+#define TP_STACK 64
+#define TP_OUT	 4096
+
+typedef struct {
+	long st[TP_STACK];
+	int sp;
+	long p[9];
+	long dyn[26], sta[26];
+	unsigned char out[TP_OUT];	/* shortcut: fixed; the language has no
+					 * loop, so output is bounded by the
+					 * capability's own length. Overflow is
+					 * an error, not a truncation. Grow it
+					 * if a real entry ever needs more. */
+	size_t len;
+	const char *err;
+} tparm_ctx;
+
+static void
+tp_fail(tparm_ctx *t, const char *why)
+{
+	if (!t->err)
+		t->err = why;
+}
+
+static void
+tp_push(tparm_ctx *t, long v)
+{
+	if (t->sp >= TP_STACK) {
+		tp_fail(t, "stack overflow");
+		return;
+	}
+	t->st[t->sp++] = v;
+}
+
+static long
+tp_pop(tparm_ctx *t)
+{
+	if (t->sp <= 0) {
+		tp_fail(t, "pop from an empty stack");
+		return 0;
+	}
+	return t->st[--t->sp];
+}
+
+static void
+tp_put(tparm_ctx *t, int c)
+{
+	if (t->len >= TP_OUT) {
+		tp_fail(t, "output too long");
+		return;
+	}
+	t->out[t->len++] = (unsigned char) c;
+}
+
+/*
+ * Skip forward from just after a %t or %e to the branch that follows.
+ * `want_else` stops at a %e as well as at the %; that closes this %?.
+ *
+ * The quoted character and the integer constant have to be stepped over
+ * rather than scanned, or `%'?'` inside a skipped branch opens a
+ * conditional that was never there.
+ */
+static size_t
+tp_skip(const char *s, size_t n, size_t i, int want_else)
+{
+	int depth = 0;
+
+	while (i < n) {
+		if (s[i] != '%') {
+			i++;
+			continue;
+		}
+		if (i + 1 >= n)
+			break;
+		switch (s[i + 1]) {
+		case '?':
+			depth++;
+			break;
+		case ';':
+			if (depth == 0)
+				return i + 2;
+			depth--;
+			break;
+		case 'e':
+			if (depth == 0 && want_else)
+				return i + 2;
+			break;
+		case '\'':
+			i += 4;		/* %, ', the character, ' */
+			continue;
+		case '{':
+			i += 2;
+			while (i < n && s[i] != '}')
+				i++;
+			if (i < n)
+				i++;	/* past the } itself */
+			continue;
+		default:
+			break;
+		}
+		i += 2;
+	}
+	return n;
+}
+
+/*
+ * Evaluate the capability in s (n bytes) with argc numeric parameters.
+ * Returns 1 and fills t->out/t->len, or 0 with t->err set.
+ */
+static int
+tparm_eval(tparm_ctx *t, const char *s, size_t n, const long *argv, int argc)
+{
+	size_t i = 0;
+	int k;
+
+	memset(t, 0, sizeof *t);
+	for (k = 0; k < 9 && k < argc; k++)
+		t->p[k] = argv[k];
+
+	while (i < n && !t->err) {
+		char c;
+
+		if (s[i] != '%') {
+			tp_put(t, (unsigned char) s[i++]);
+			continue;
+		}
+		if (++i >= n) {
+			tp_fail(t, "trailing %");
+			break;
+		}
+		c = s[i++];
+		switch (c) {
+		case '%':
+			tp_put(t, '%');
+			break;
+		case 'c': {
+			long v = tp_pop(t);
+
+			/* ncurses cannot store a NUL in the string it is
+			 * building, so it writes 0200 instead. Matching that
+			 * is the difference between agreeing with tput and
+			 * disagreeing on one byte of `rep`. */
+			tp_put(t, (int) (v == 0 ? 0200 : v) & 0xff);
+			break;
+		}
+		case 's':
+		case 'l':
+			tp_fail(t, "string parameters are not supported");
+			break;
+		case 'p':
+			if (i < n && s[i] >= '1' && s[i] <= '9')
+				tp_push(t, t->p[s[i++] - '1']);
+			else
+				tp_fail(t, "%p without a digit");
+			break;
+		case 'P':
+			if (i < n && s[i] >= 'a' && s[i] <= 'z')
+				t->dyn[s[i++] - 'a'] = tp_pop(t);
+			else if (i < n && s[i] >= 'A' && s[i] <= 'Z')
+				t->sta[s[i++] - 'A'] = tp_pop(t);
+			else
+				tp_fail(t, "%P without a variable");
+			break;
+		case 'g':
+			if (i < n && s[i] >= 'a' && s[i] <= 'z')
+				tp_push(t, t->dyn[s[i++] - 'a']);
+			else if (i < n && s[i] >= 'A' && s[i] <= 'Z')
+				tp_push(t, t->sta[s[i++] - 'A']);
+			else
+				tp_fail(t, "%g without a variable");
+			break;
+		case '\'':
+			if (i + 1 < n && s[i + 1] == '\'') {
+				tp_push(t, (unsigned char) s[i]);
+				i += 2;
+			} else {
+				tp_fail(t, "unterminated character constant");
+			}
+			break;
+		case '{': {
+			long v = 0;
+			int neg = 0;
+
+			if (i < n && s[i] == '-') {
+				neg = 1;
+				i++;
+			}
+			if (i >= n || s[i] < '0' || s[i] > '9')
+				tp_fail(t, "%{ without a number");
+			while (i < n && s[i] >= '0' && s[i] <= '9')
+				v = v * 10 + (s[i++] - '0');
+			if (i < n && s[i] == '}')
+				i++;
+			else
+				tp_fail(t, "unterminated integer constant");
+			tp_push(t, neg ? -v : v);
+			break;
+		}
+		case '+': case '-': case '*': case '/': case 'm':
+		case '&': case '|': case '^':
+		case '=': case '>': case '<':
+		case 'A': case 'O': {
+			long x = tp_pop(t);	/* right operand */
+			long y = tp_pop(t);	/* left operand */
+			long r = 0;
+
+			switch (c) {
+			case '+': r = y + x; break;
+			case '-': r = y - x; break;
+			case '*': r = y * x; break;
+			/* A zero divisor is zero, not a trap: ncurses
+			 * guards both of these and so must anything
+			 * compared against it. */
+			case '/': r = x ? y / x : 0; break;
+			case 'm': r = x ? y % x : 0; break;
+			case '&': r = y & x; break;
+			case '|': r = y | x; break;
+			case '^': r = y ^ x; break;
+			case '=': r = y == x; break;
+			case '>': r = y > x; break;
+			case '<': r = y < x; break;
+			case 'A': r = y && x; break;
+			case 'O': r = y || x; break;
+			}
+			tp_push(t, r);
+			break;
+		}
+		case '!':
+			tp_push(t, !tp_pop(t));
+			break;
+		case '~':
+			tp_push(t, ~tp_pop(t));
+			break;
+		case 'i':
+			t->p[0]++;
+			t->p[1]++;
+			break;
+		case '?':
+		case ';':
+			break;
+		case 't':
+			if (!tp_pop(t))
+				i = tp_skip(s, n, i, 1);
+			break;
+		case 'e':
+			i = tp_skip(s, n, i, 0);
+			break;
+		default: {
+			/* A printf conversion: flags after a `:`, then an
+			 * optional width and precision, then d/o/x/X. The
+			 * `:` is the only way to write the `-` flag, because
+			 * a bare `%-` is subtraction. */
+			char fmt[32];
+			char buf[64];
+			size_t f = 0;
+			int len;
+
+			fmt[f++] = '%';
+			i--;
+			if (s[i] == ':')
+				i++;
+			while (i < n && f + 4 < sizeof fmt
+			       && strchr("-+# ", s[i]))
+				fmt[f++] = s[i++];
+			while (i < n && f + 4 < sizeof fmt
+			       && s[i] >= '0' && s[i] <= '9')
+				fmt[f++] = s[i++];
+			if (i < n && s[i] == '.' && f + 4 < sizeof fmt) {
+				fmt[f++] = s[i++];
+				while (i < n && f + 4 < sizeof fmt
+				       && s[i] >= '0' && s[i] <= '9')
+					fmt[f++] = s[i++];
+			}
+			if (i >= n || !strchr("doxX", s[i])) {
+				tp_fail(t, "unknown % sequence");
+				break;
+			}
+			fmt[f++] = 'l';
+			fmt[f++] = s[i++];
+			fmt[f] = '\0';
+			len = snprintf(buf, sizeof buf, fmt, tp_pop(t));
+			if (len < 0 || (size_t) len >= sizeof buf) {
+				tp_fail(t, "formatted value too long");
+				break;
+			}
+			for (k = 0; k < len; k++)
+				tp_put(t, (unsigned char) buf[k]);
+			break;
+		}
+		}
+	}
+	return t->err == NULL;
+}
+
 /* ------------------------------------------------------------------ output */
 
 /* Emitted as HEX rather than in terminfo's own escape notation.
@@ -814,6 +1134,71 @@ dump_ext(const entry *e)
 	}
 }
 
+/*
+ * Every string capability that contains a % escape, evaluated with the
+ * parameters given on the command line, one line each:
+ *
+ *	p  NAME HEX	 the bytes it evaluates to
+ *	p! NAME reason	 this evaluator refused it
+ *
+ * Hex for the same reason the plain dump uses hex: the result is arbitrary
+ * bytes, `rep` with a zero parameter starts with 0200, and the comparison
+ * against tput has to be byte for byte rather than between two renderings.
+ *
+ * Note what this does NOT do: it does not decide which capabilities are
+ * worth comparing. Everything with a % in it gets a line, including the
+ * ones it refuses, and t/run.sh picks the comparable set out of infocmp's
+ * own text. A filter living here would be the code under test choosing its
+ * own examination.
+ */
+static void
+dump_param(const entry *e, const long *argv, int argc)
+{
+	tparm_ctx t;
+	int i;
+
+	for (i = 0; i < e->nstr; i++) {
+		size_t n, k;
+		const char *v = ti_str(e, i, &n);
+		const char *nm = i < 414 ? str_names[i] : NULL;
+
+		if (!v || v == TI_CANCEL_STR || !nm)
+			continue;
+		if (!memchr(v, '%', n))
+			continue;
+		if (!tparm_eval(&t, v, n, argv, argc)) {
+			printf("p! %s %s\n", nm, t.err);
+			continue;
+		}
+		printf("p %s ", nm);
+		for (k = 0; k < t.len; k++)
+			printf("%02x", t.out[k]);
+		putchar('\n');
+	}
+	if (!e->has_ext)
+		return;
+	for (i = 0; i < e->es; i++) {
+		const char *nm = ext_name(e, e->eb + e->en + i);
+		int off = le16(e->eoffs + (size_t) i * 2);
+		const char *v;
+		size_t n, k;
+
+		if (off == TI_ABSENT || off == TI_CANCELLED)
+			continue;
+		v = etab_at(e, (size_t) off, &n);
+		if (!v || !memchr(v, '%', n))
+			continue;
+		if (!tparm_eval(&t, v, n, argv, argc)) {
+			printf("p! %s %s\n", nm, t.err);
+			continue;
+		}
+		printf("p %s ", nm);
+		for (k = 0; k < t.len; k++)
+			printf("%02x", t.out[k]);
+		putchar('\n');
+	}
+}
+
 static int
 mode_dump(const entry *e)
 {
@@ -850,7 +1235,8 @@ usage(void)
 {
 	fprintf(stderr,
 		"usage: terminfo -i FILE              header facts\n"
-		"       terminfo -d FILE              dump every capability\n");
+		"       terminfo -d FILE              dump every capability\n"
+		"       terminfo -p FILE [ARG...]     evaluate every parameterised string\n");
 }
 
 int
@@ -858,6 +1244,8 @@ main(int argc, char **argv)
 {
 	entry e;
 	int rc;
+	long args[9] = { 0 };
+	int nargv = 0;
 
 	if (argc > 0 && argv[0][0])
 		prog = "terminfo";
@@ -865,13 +1253,38 @@ main(int argc, char **argv)
 		usage();
 		return 2;
 	}
-	if (strcmp(argv[1], "-i") != 0 && strcmp(argv[1], "-d") != 0) {
+	if (strcmp(argv[1], "-i") != 0 && strcmp(argv[1], "-d") != 0
+	    && strcmp(argv[1], "-p") != 0) {
 		usage();
 		return 2;
 	}
+	/* -p takes the parameters after the file. Anything that is not a
+	 * number is a usage error rather than a silent zero: a mistyped
+	 * parameter that evaluated to 0 would disagree with tput on a
+	 * conditional and look like a decoder bug. */
+	if (argv[1][1] == 'p') {
+		int i;
+
+		for (i = 3; i < argc && nargv < 9; i++) {
+			char *end;
+
+			errno = 0;
+			args[nargv] = strtol(argv[i], &end, 10);
+			if (*end || end == argv[i] || errno) {
+				diag("%s: not a number", argv[i]);
+				return 2;
+			}
+			nargv++;
+		}
+	}
 	if (!ti_parse(&e, argv[2]))
 		return 1;
-	rc = argv[1][1] == 'i' ? mode_info(&e) : mode_dump(&e);
+	if (argv[1][1] == 'p') {
+		dump_param(&e, args, nargv);
+		rc = 0;
+	} else {
+		rc = argv[1][1] == 'i' ? mode_info(&e) : mode_dump(&e);
+	}
 	ti_free(&e);
 	return rc;
 }

@@ -18,8 +18,9 @@ test: terminfo
 # first-class target rather than a nicety. ASan catches the out-of-bounds
 # read a missing bound check would hide; UBSan catches the signed shifts in
 # the little-endian decode and the overflow paths in the offset arithmetic.
-# (This said "tparm's arithmetic". There is no tparm here: parameterised
-# strings are not evaluated at all -- that is PLAN item 06, unticked.)
+# There is a tparm here now (PLAN item 06): -p evaluates parameterised
+# strings, so the overflow paths in its arithmetic and the bounds on its
+# stack and output buffer are under the sanitizer too.
 terminfo-asan: terminfo.c
 	$(CC) -std=c11 -g -O1 -fsanitize=address,undefined \
 		-fno-omit-frame-pointer -Wall -Wextra -o $@ $<
